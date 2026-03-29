@@ -9,10 +9,11 @@ MEMORY
 SECTIONS
 {
   .text : {
-    *(.text.init)
-    *(.text)
+    KEEP(*(.text.init))
+    *(.text .text.*)
   } > ram
 
+  .rodata : { *(.rodata .rodata.*) } > ram
   .data : { *(.data) } > ram
   .bss : { *(.bss) } > ram
 }

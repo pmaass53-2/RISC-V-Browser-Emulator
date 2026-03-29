@@ -69,10 +69,10 @@ int main() {
 }
 
 // Bare-metal startup code
-asm (
+/*asm (
     ".section .text.init\n"
     ".global _start\n"
     "_start:\n"
     "li sp, 0x82000000\n"
     "call main\n"
-);
+);*/
