@@ -18,7 +18,7 @@
         const remoteSelector = document.getElementById("remoteSelector")
 
         remoteSelector.addEventListener("click", () => {
-            fetch('/test.bin').then(res => res.arrayBuffer()).then(buffer => {
+            fetch('/payload.bin').then(res => res.arrayBuffer()).then(buffer => {
                 sessionStorage.setItem('binaryFileData', JSON.stringify({
                     name: 'test.bin',
                     type: 'application/octet-stream',
