@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>Running - RV32IMA Emulator</title>
+        <style>
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+            body {
+                background: #1a1a1a;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                font-family: monospace;
+            }
+            #terminal {
+                width: 800px;
+                height: 500px;
+                background: #0d0d0d;
+                color: #33ff33;
+                font-family: 'Courier New', monospace;
+                font-size: 14px;
+                padding: 12px;
+                border: 1px solid #333;
+                border-radius: 4px;
+                resize: none;
+                outline: none;
+                overflow-y: scroll;
+                white-space: pre;
+                /* Make it look read-only but still focusable for keydown */
+                caret-color: transparent;
+            }
+            #status {
+                color: #555;
+                font-size: 0.75rem;
+                margin-top: 6px;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="terminal" tabindex="0"></div>
+        <div id="status">Loading wasm...</div>
+        <script>
+            // HTML elements
+            const rom = document.getElementById("rom")
+            const terminal = document.getElementById('terminal')
+            const status = document.getElementById('status')
+            // terminalinal buffer
+            let content = ''
+
+            // Called from C++ via EM_ASM when the UART transmits a byte
+            function js_uart_write(byte) {
+                const ch = String.fromCharCode(byte);
+                if (ch === '\r') return
+                content += ch
+                terminal.textContent = content
+                terminal.scrollTop = terminal.scrollHeight
+            }
+            // handle input
+            terminal.addEventListener('keydown', e => {
+                e.preventDefault()
+                if (!Module._uart_push_byte) return
+                // handle special characters
+                if (e.key.length === 1) {
+                    Module._uart_push_byte(e.key.charCodeAt(0))
+                } else if (e.key === 'Enter') {
+                    Module._uart_push_byte(13)
+                } else if (e.key === 'Backspace') {
+                    Module._uart_push_byte(127)
+                } else if (e.key === 'ArrowUp') {
+                    Module._uart_push_byte(27)
+                    Module._uart_push_byte(91)
+                    Module._uart_push_byte(65)
+                } else if (e.key === 'ArrowDown') {
+                    Module._uart_push_byte(27)
+                    Module._uart_push_byte(91)
+                    Module._uart_push_byte(66)
+                }
+            })
+            terminal.addEventListener('click', () => terminal.focus())
+            
+            // emscripten module
+            var Module = {
+                onRuntimeInitialized: function () {
+                    // update status
+                    status.textContent = 'Wasm loaded - running';
+                    // boot the emulator
+                    terminal.focus()
+
+                    // load binary
+                    const rawData = JSON.parse(sessionStorage.getItem("binaryFileData"))
+                    if (rawData) {
+                        const bbuff = new Uint8Array(rawData.data)
+                        const ptr = Module._malloc(bbuff.length)
+                        HEAPU8.set(bbuff, ptr)
+                        Module._load_rom(ptr, bbuff.length)
+                        Module._free(ptr)
+                        console.log(`Sent ${bbuff.length} bytes to WASM`)
+                    } else {
+                        alert("missing binary data")
+                    }
+                }
+            };
+        </script>
+        <!-- Emscripten-generated JS loader -->
+        <script src="emulator.js"></script>
+    </body>
+</html>

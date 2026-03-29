@@ -17,6 +17,7 @@ void test_assert(const char* test_name, int condition) {
 }
 
 int main() {
+    print_str("Hello Silas\n");
     print_str("\n--- RISC-V RV32IMA CPU SMOKE TEST ---\n");
 
     // 1. ARITHMETIC (ADD / SUB)
