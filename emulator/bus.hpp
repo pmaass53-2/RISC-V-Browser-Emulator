@@ -49,7 +49,7 @@ class Bus {
                 uint32_t offset = address - UART_BASE;
                 return uart.read_reg(offset);
             }
-            return 0xFFFFFFFF;
+            return static_cast<T>(0xFFFFFFFF);
         }
         template<typename T>
         inline void write(uint32_t address, uint32_t value) {

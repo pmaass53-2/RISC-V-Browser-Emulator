@@ -1,0 +1,2 @@
+/home/pmaass/xpack-riscv-none-embed-gcc-10.2.0-1.1/bin/riscv-none-embed-gcc -O2 -march=rv32ima -mabi=ilp32 -ffreestanding -nostdlib -T linker.ld main.c -o payload.elf
+/home/pmaass/xpack-riscv-none-embed-gcc-10.2.0-1.1/bin/riscv-none-embed-objcopy -O binary payload.elf payload.bin

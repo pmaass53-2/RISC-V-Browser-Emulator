@@ -30,6 +30,10 @@ class CPU {
         static constexpr uint32_t CSR_MCAUSE = 0x342;
         static constexpr uint32_t CSR_MTVAL = 0x343;
         static constexpr uint32_t CSR_MIP = 0x344;
+        static constexpr uint32_t CSR_MCYCLE = 0xB00;
+        static constexpr uint32_t CSR_MINSTRET = 0xB02;
+        static constexpr uint32_t CSR_MCYCLEH = 0xB80;
+        static constexpr uint32_t CSR_MINSTRETH = 0xB82;
         // read only CSRs
         static constexpr uint32_t CSR_MVENDORID = 0xF11;
         static constexpr uint32_t CSR_MARCHID = 0xF12;
@@ -68,6 +72,9 @@ class CPU {
         uint32_t reservation_addr = 0xFFFFFFFF;
         uint32_t privilege = 3;
         bool reservation_valid = false;
+        // special 64-bit registers
+        uint64_t mcycle = 0;
+        uint64_t minstret = 0;
         CPU(Bus *busptr, uint32_t ram_start);
         void tick();
     private:
@@ -94,6 +101,18 @@ class CPU {
                         break;
                     case CSR_SIP:
                         return csr_file[CSR_MIP] & csr_file[CSR_MIDELEG];
+                        break;
+                    case CSR_MCYCLE:
+                        return static_cast<uint32_t>(mcycle);
+                        break;
+                    case CSR_MCYCLEH:
+                        return static_cast<uint32_t>(mcycle >> 32);
+                        break;
+                    case CSR_MINSTRET:
+                        return static_cast<uint32_t>(minstret);
+                        break;
+                    case CSR_MINSTRETH:
+                        return static_cast<uint32_t>(minstret >> 32);
                         break;
                     default:
                         return csr_file[csr];

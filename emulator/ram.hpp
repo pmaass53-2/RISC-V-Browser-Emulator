@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <cstring>
 
-#define MEMORY_SIZE 32000000
+#define MEMORY_SIZE 0x02000000
 
 class RAM {
     // 16-byte alignment for SIMD

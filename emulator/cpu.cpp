@@ -7,10 +7,16 @@
 CPU::CPU(Bus* busptr, uint32_t ram_start) : bus(busptr), next_pc(ram_start) {
 }
 void CPU::tick() {
+    // increment instructions executed
+    mcycle++;
+    minstret++;
+    // update pc, current instruction, opcode
     pc = next_pc;
     inst_reg = bus->read<uint32_t>(pc);
     uint32_t opcode = inst_reg & 0x7F;
+    // default value for next_pc (can be overriden)
     next_pc = pc + 4;
+    // update MSIP (software interrupt pending) and MTIP (timer interrupt pending) from CLINT
     if (bus->clint.MTIP) {
         set_csr(CSR_MIP, get_csr(CSR_MIP) | (1 << 7));
     } else {
@@ -19,31 +25,30 @@ void CPU::tick() {
     if (bus->clint.MSIP) {
         set_csr(CSR_MIP, get_csr(CSR_MIP) | (1 << 3));
     } else {
-        set_csr(CSR_MIP, get_csr(CSR_MIP) & ~(1 << 7));
+        set_csr(CSR_MIP, get_csr(CSR_MIP) & ~(1 << 3));
     }
-    // priority: PLIC, software, timer
+    // handle traps and interrupts
     uint32_t mstatus = get_csr(CSR_MSTATUS);
     uint32_t mie = get_csr(CSR_MIE);
     uint32_t mip = get_csr(CSR_MIP);
     // if accepting interrupts
-    if ((mstatus & (1 << 3)) != 0) {
+    bool interrupts_enabled = (privilege < 3) || (privilege == 3 && (mstatus & (1 << 3)));
+    if (interrupts_enabled) {
         if ((mip & (1 << 11)) && (mie & (1 << 11))) {
             // external/PLIC interrupt
-            set_csr(CSR_MEPC, next_pc);
             take_trap(CAUSE_MEI);
             return;
         } else if ((mip & (1 << 3)) && (mie & (1 << 3))) {
             // software interrupt
-            set_csr(CSR_MEPC, next_pc);
             take_trap(CAUSE_MSI);
             return;
         } else if ((mip & (1 << 7)) && (mie & (1 << 7))) {
             // timer interrupt
-            set_csr(CSR_MEPC, next_pc);
             take_trap(CAUSE_MTI);
             return;
         }
     }
+    // execute current instruction
     switch (opcode) {
         case OP:
             switch (funct7()) {
@@ -337,6 +342,9 @@ void CPU::tick() {
                             set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) | (1U << 7));
                             set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) & ~(3U << 11));
                             break;
+                        default:
+                            take_trap(CAUSE_ILLEGALI);
+                            break;
                     }
                     break;
                 case 0x1:
@@ -364,7 +372,9 @@ void CPU::tick() {
                 case 0x5:
                     // CSRRWI
                     temp = get_csr(csr_addr());
-                    set_csr(csr_addr(), rs1());
+                    if (rs1() != 0) {
+                        set_csr(csr_addr(), rs1());
+                    }
                     set_reg(rd(), temp);
                     break;
                 case 0x6:
@@ -494,6 +504,7 @@ void CPU::tick() {
                 default:
                     take_trap(CAUSE_ILLEGALI);
             }
+            break;
         default:
             take_trap(CAUSE_ILLEGALI);
     }

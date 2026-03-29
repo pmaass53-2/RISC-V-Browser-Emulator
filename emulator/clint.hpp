@@ -1,8 +1,6 @@
 #ifndef CLINT_HPP
 #define CLINT_HPP
 
-#include "cpu.hpp"
-
 class CLINT {
     public:
         uint32_t MSIP = 0;
