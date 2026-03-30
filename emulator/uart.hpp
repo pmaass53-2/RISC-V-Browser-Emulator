@@ -64,6 +64,7 @@ class UART {
         void rx_push(uint8_t c) {
             regs[RBR] = c;
             regs[LSR] |= 0x01;
+            // trigger PLIC interrupt once PLIC is implemented
         }
 };
 #endif

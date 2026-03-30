@@ -68,7 +68,7 @@ class CPU {
         static constexpr uint32_t CAUSE_ILLEGALI = 0x00000002;
         static constexpr uint32_t CAUSE_EBREAK = 0x00000003;
         static constexpr uint32_t CAUSE_LOAD_ALIGN = 0x00000004;
-        static constexpr uint32_t CAUSE_ATOMIC_ALIGN = 0x00000006;
+        static constexpr uint32_t CAUSE_STORE_ALIGN = 0x00000006;
         static constexpr uint32_t CAUSE_ECALL_U = 0x00000008;
         static constexpr uint32_t CAUSE_ECALL_S = 0x00000009;
         static constexpr uint32_t CAUSE_ECALL_M = 0x0000000B;

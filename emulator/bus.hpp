@@ -34,20 +34,20 @@ class Bus {
             // ram first for performance
             if (address >= RAM_BASE && address < RAM_BASE + RAM_SIZE) {
                 uint32_t offset = address - RAM_BASE;
-                return ram.read<T>(offset);
+                return ram->read<T>(offset);
             } else if (address >= CLINT_BASE && address < CLINT_BASE + CLINT_SIZE) {
                 // talk to CLINT
                 uint32_t offset = address - CLINT_BASE;
-                return clint.read_reg(offset);
+                return clint->read_reg(offset);
             } else if (address >= PLIC_BASE && address < PLIC_BASE + PLIC_SIZE) {
                 // talk to PLIC
                 uint32_t offset = address - PLIC_BASE;
                 // TODO: implement
-                // return plic.read_reg(offset);
+                // return plic->read_reg(offset);
             } else if (address >= UART_BASE && address < UART_BASE + UART_SIZE) {
                 // talk to UART
                 uint32_t offset = address - UART_BASE;
-                return uart.read_reg(offset);
+                return uart->read_reg(offset);
             }
             return static_cast<T>(0xFFFFFFFF);
         }
@@ -56,22 +56,22 @@ class Bus {
             // ram first for performance
             if (address >= RAM_BASE && address < RAM_BASE + RAM_SIZE) {
                 uint32_t offset = address - RAM_BASE;
-                ram.write<T>(offset, value);
+                ram->write<T>(offset, value);
                 return;
             } else if (address >= CLINT_BASE && address < CLINT_BASE + CLINT_SIZE) {
                 // talk to CLINT
                 uint32_t offset = address - CLINT_BASE;
-                clint.write_reg(offset, value);
+                clint->write_reg(offset, value);
                 return;
             } else if (address >= PLIC_BASE && address < PLIC_BASE + PLIC_SIZE) {
                 // talk to PLIC
                 // TODO: implement
-                // plic.write_reg(offset, value);
+                // plic->write_reg(offset, value);
                 return;
             } else if (address >= UART_BASE && address < UART_BASE + UART_SIZE) {
                 // talk to UART
                 uint32_t offset = address - UART_BASE;
-                uart.write_reg(offset, value);
+                uart->write_reg(offset, value);
                 return;
             }
         }

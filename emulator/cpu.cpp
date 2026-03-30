@@ -20,15 +20,15 @@ uint32_t CPU::check_access(uint32_t virt, uint32_t pte, uint32_t access_type) {
         return 0;
     }
     if (access_type == 0 && r == 0) {
-        take_trap(virt, CAUSE_PAGE_FAULT_LOAD);
+        take_trap(CAUSE_PAGE_FAULT_LOAD, virt);
         return 0;
     }
     if (access_type == 1 && w == 0) {
-        take_trap(virt, CAUSE_PAGE_FAULT_STORE);
+        take_trap(CAUSE_PAGE_FAULT_STORE, virt);
         return 0;
     }
     if (access_type == 2 && x == 0) {
-        take_trap(virt, CAUSE_PAGE_FAULT_INST);
+        take_trap(CAUSE_PAGE_FAULT_INST, virt);
         return 0;
     }
     return 1;
@@ -87,7 +87,15 @@ CPU::Translation CPU::translate(uint32_t virt, uint32_t access_type) {
 }
 template <typename T>
 T CPU::read_memory(uint32_t virt, uint32_t access_type) {
-    if (privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
+    if ((virt & (sizeof(T) - 1)) != 0) {
+        take_trap(CAUSE_LOAD_ALIGN, virt);
+        return 0;
+    }
+    uint32_t effective_privilege = privilege;
+    if ((csr_file[CSR_MSTATUS] >> 17) & 1) {
+        effective_privilege = (csr_file[CSR_MSTATUS] >> 11) & 3;
+    }
+    if (effective_privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
         return bus->read<T>(virt);
     } else {
         // TLB lookup
@@ -95,7 +103,7 @@ T CPU::read_memory(uint32_t virt, uint32_t access_type) {
         uint32_t tlb_index = full_vpn & 0xFF;
         uint32_t physical_addr = 0;
         if (tlb[tlb_index].valid && tlb[tlb_index].vpn == full_vpn) {
-            if (check_access(tlb[tlb_index].permissions, access_type) == 1) {
+            if (check_access(virt, tlb[tlb_index].permissions, access_type) == 1) {
                 uint32_t offset = virt & 0xFFF;
                 physical_addr = (tlb[tlb_index].ppn << 12) | offset;
             } else {
@@ -120,7 +128,16 @@ T CPU::read_memory(uint32_t virt, uint32_t access_type) {
 }
 template <typename T>
 void CPU::write_memory(uint32_t virt, T val) {
-    if (privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
+    if ((virt & (sizeof(T) - 1)) != 0) {
+        take_trap(CAUSE_STORE_ALIGN, virt);
+        return;
+    }
+    reservation_valid = false;
+    uint32_t effective_privilege = privilege;
+    if ((csr_file[CSR_MSTATUS] >> 17) & 1) {
+        effective_privilege = (csr_file[CSR_MSTATUS] >> 11) & 3;
+    }
+    if (effective_privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
         bus->write<T>(virt, val);
         return;
     } else {
@@ -129,7 +146,7 @@ void CPU::write_memory(uint32_t virt, T val) {
         uint32_t tlb_index = full_vpn & 0xFF;
         uint32_t physical_addr = 0;
         if (tlb[tlb_index].valid && tlb[tlb_index].vpn == full_vpn) {
-            if (check_access(tlb[tlb_index].permissions, access_type) == 1) {
+            if (check_access(virt, tlb[tlb_index].permissions, access_type) == 1) {
                 uint32_t offset = virt & 0xFFF;
                 physical_addr = (tlb[tlb_index].ppn << 12) | offset;
             } else {
@@ -154,48 +171,55 @@ void CPU::tick() {
     trap_pending = false;
     // increment instructions executed
     mcycle++;
-    minstret++;
+    // update MSIP (software interrupt pending) and MTIP (timer interrupt pending) from CLINT
+    csr_file[CSR_MIP] = (csr_file[CSR_MIP] & ~0x88) | (bus->clint->MTIP << 7) | (bus->clint->MSIP << 3);
+    // handle traps and interrupts
+    uint32_t mstatus = csr_file[CSR_MSTATUS];
+    uint32_t mideleg = csr_file[CSR_MIDELEG];
+    uint32_t pending = csr_file[CSR_MIP] & csr_file[CSR_MIE];
+    bool m_accept = (privilege < 3) || (privilege == 3 && (mstatus & (1 << 3)));
+    bool s_accept = (privilege < 1) || (privilege == 1 && (mstatus & (1 << 1)));
+    // Split candidates by delegation
+    uint32_t m_candidates = pending & ~mideleg;
+    uint32_t s_candidates = pending & mideleg;
+    // prioritize External > Software > Timer
+    if (m_accept && m_candidates) {
+        if (m_candidates & (1 << 11)) {
+            take_trap(0x8000000B);
+            return;
+        }
+        if (m_candidates & (1 << 3)) {
+            take_trap(0x80000003);
+            return;
+        }
+        if (m_candidates & (1 << 7)) {
+            take_trap(0x80000007);
+            return;
+        }
+    }
+    if (s_accept && s_candidates) {
+        if (s_candidates & (1 << 9)) {
+            take_trap(0x80000009);
+            return;
+        }
+        if (s_candidates & (1 << 1)) {
+            take_trap(0x80000001);
+            return;
+        }
+        if (s_candidates & (1 << 5)) {
+            take_trap(0x80000005);
+            return;
+        }
+    }
     // update pc, current instruction, opcode
     pc = next_pc;
     inst_reg = read_memory<uint32_t>(pc, ACCESS_FETCH);
-    if (trap_pending) {
-        // error reading instruction
-        return;
-    }
     uint32_t opcode = inst_reg & 0x7F;
     // default value for next_pc (can be overriden)
     next_pc = pc + 4;
-    // update MSIP (software interrupt pending) and MTIP (timer interrupt pending) from CLINT
-    if (bus->clint->MTIP) {
-        set_csr(CSR_MIP, get_csr(CSR_MIP) | (1 << 7));
-    } else {
-        set_csr(CSR_MIP, get_csr(CSR_MIP) & ~(1 << 7));
-    }
-    if (bus->clint->MSIP) {
-        set_csr(CSR_MIP, get_csr(CSR_MIP) | (1 << 3));
-    } else {
-        set_csr(CSR_MIP, get_csr(CSR_MIP) & ~(1 << 3));
-    }
-    // handle traps and interrupts
-    uint32_t mstatus = get_csr(CSR_MSTATUS);
-    uint32_t mie = get_csr(CSR_MIE);
-    uint32_t mip = get_csr(CSR_MIP);
-    // if accepting interrupts
-    bool interrupts_enabled = (privilege < 3) || (privilege == 3 && (mstatus & (1 << 3)));
-    if (interrupts_enabled) {
-        if ((mip & (1 << 11)) && (mie & (1 << 11))) {
-            // external/PLIC interrupt
-            take_trap(CAUSE_MEI);
-            return;
-        } else if ((mip & (1 << 3)) && (mie & (1 << 3))) {
-            // software interrupt
-            take_trap(CAUSE_MSI);
-            return;
-        } else if ((mip & (1 << 7)) && (mie & (1 << 7))) {
-            // timer interrupt
-            take_trap(CAUSE_MTI);
-            return;
-        }
+    if (trap_pending) {
+        // error reading instruction
+        return;
     }
     // execute current instruction
     switch (opcode) {
@@ -542,10 +566,11 @@ void CPU::tick() {
                             }
                             next_pc = get_csr(CSR_SEPC);
                             privilege = (get_csr(CSR_MSTATUS) >> 8) & 1;
+                            // clear SPP after reading
+                            set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) & ~(1U << 8));
                             // copy SPIE to SIE
                             set_csr(CSR_MSTATUS, (get_csr(CSR_MSTATUS) & ~(1U << 1)) | (((get_csr(CSR_MSTATUS) >> 5) & 1U) << 1));
                             set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) | (1U << 5));
-                            set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) & ~(1U << 8));
                             break;
                         case 0x302:
                             // MRET
@@ -588,7 +613,7 @@ void CPU::tick() {
                     set_reg(rd(), temp);
                     break;
                 case 0x5:
-                    // CSRRWI
+                    // CSRRWI;
                     temp = get_csr(csr_addr());
                     if (rs1() != 0) {
                         set_csr(csr_addr(), rs1());
@@ -637,7 +662,7 @@ void CPU::tick() {
                 if (funct5() == 0x02) {
                     take_trap(CAUSE_LOAD_ALIGN);
                 } else {
-                    take_trap(CAUSE_ATOMIC_ALIGN);
+                    take_trap(CAUSE_STORE_ALIGN);
                 }
                 break;
             }
@@ -669,10 +694,15 @@ void CPU::tick() {
                     break;
                 case 0x03:
                     // SC.W
-                    if (reservation_valid && reg_file[rs1()] == reservation_addr) {
-                        write_memory<uint32_t>(reg_file[rs1()], reg_file[rs2()]);
-                        reservation_addr = 0xFFFFFFFF;
-                        set_reg(rd(), 0);
+                    if (reservation_valid && translate(reg_file[rs1()], ACCESS_WRITE).physical_addr == reservation_addr) {
+                        if (trap_pending) {
+                            // translate failed
+                            return;
+                        } else {
+                            write_memory<uint32_t>(reg_file[rs1()], reg_file[rs2()]);
+                            reservation_addr = 0xFFFFFFFF;
+                            set_reg(rd(), 0);
+                        }
                     } else {
                         set_reg(rd(), 1);
                     }
@@ -760,4 +790,5 @@ void CPU::tick() {
         default:
             take_trap(CAUSE_ILLEGALI, inst_reg);
     }
+    minstret++;
 };
