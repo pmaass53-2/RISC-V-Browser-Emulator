@@ -13,7 +13,7 @@ CLINT clint;
 PLIC plic;
 UART uart;
 RAM ram;
-Bus bus(clint, plic, uart, ram);
+Bus bus(&clint, &plic, &uart, &ram);
 CPU cpu(&bus, 0x80000000);
 
 bool is_running = false;
@@ -25,7 +25,7 @@ void main_loop() {
     for (int i = 0; i < 10000; i++) {
         cpu.tick();
         if (cpu.mcycle % 10 == 0) {
-            bus.clint.tick();
+            bus.clint->tick();
         }
     }
 }
@@ -34,7 +34,7 @@ extern "C" {
     EMSCRIPTEN_KEEPALIVE
     void load_rom(uint8_t* buffer, int size) {
         // Load the bytes into RAM
-        bus.ram.load(buffer, size);
+        bus.ram->load(buffer, size);
         is_running = true;
         printf("ROM loaded successfully. Starting CPU...\n");
     }

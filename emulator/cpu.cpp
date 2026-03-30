@@ -6,29 +6,29 @@
 
 CPU::CPU(Bus* busptr, uint32_t ram_start) : bus(busptr), next_pc(ram_start) {
 }
-uint32_t CPU::check_access(uint32_t pte, uint32_t access_type) {
+uint32_t CPU::check_access(uint32_t virt, uint32_t pte, uint32_t access_type) {
     bool r = (pte >> 1) & 0x1;
     bool w = (pte >> 2) & 0x1;
     bool x = (pte >> 3) & 0x1;
     bool u = (pte >> 4) & 0x1;
     if (privilege == 0 && u == 0) {
-        page_fault(access_type);
+        page_fault(virt, access_type);
         return 0;
     }
-    if (privilege == 1 && u == 1) {
-        page_fault(access_type);
+    if (!((csr_file[CSR_MSTATUS] & 0x40000) >> 18) && privilege == 1 && u == 1) {
+        page_fault(virt, access_type);
         return 0;
     }
     if (access_type == 0 && r == 0) {
-        take_trap(CAUSE_PAGE_FAULT_LOAD);
+        take_trap(virt, CAUSE_PAGE_FAULT_LOAD);
         return 0;
     }
     if (access_type == 1 && w == 0) {
-        take_trap(CAUSE_PAGE_FAULT_STORE);
+        take_trap(virt, CAUSE_PAGE_FAULT_STORE);
         return 0;
     }
     if (access_type == 2 && x == 0) {
-        take_trap(CAUSE_PAGE_FAULT_INST);
+        take_trap(virt, CAUSE_PAGE_FAULT_INST);
         return 0;
     }
     return 1;
@@ -39,21 +39,21 @@ CPU::Translation CPU::translate(uint32_t virt, uint32_t access_type) {
     uint32_t vpn0 = (virt >> 12) & 0x3FF;
     uint32_t vpn1 = (virt >> 22) & 0x3FF;
     uint32_t pte1_address = ((csr_file[CSR_SATP] & 0x3FFFFF) * 4096) + (vpn1 * 4);
-    uint32_t pte1 = bus->ram.read<uint32_t>(pte1_address);
+    uint32_t pte1 = bus->read<uint32_t>(pte1_address);
     bool pte1_valid = pte1 & 0x1;
     if (pte1_valid) {
         // simplified form, extract RWX
         if ((pte1 & 0xE) == 0) {
             // pointer
             uint32_t pte0_address = (((pte1 >> 10) & 0x3FFFFF) * 4096) + (vpn0 * 4);
-            uint32_t pte0 = bus->ram.read<uint32_t>(pte0_address);
+            uint32_t pte0 = bus->read<uint32_t>(pte0_address);
             bool pte0_valid = pte0 & 0x1;
             if (pte0_valid) {
                 if ((pte0 & 0xE) == 0) {
-                    page_fault(access_type);
+                    page_fault(virt, access_type);
                     return {0, 0};
                 } else {
-                    if (check_access(pte0, access_type) == 0) {
+                    if (check_access(virt, pte0, access_type) == 0) {
                         return {0, 0};
                     } else {
                         uint32_t ppn = (pte0 >> 10) & 0x3FFFFF;
@@ -62,17 +62,17 @@ CPU::Translation CPU::translate(uint32_t virt, uint32_t access_type) {
                     }
                 }
             } else {
-                page_fault(access_type);
+                page_fault(virt, access_type);
                 return {0, 0};
             }
         } else {
             // superpage (4MB)
             uint32_t pte1_ppn = (pte1 >> 10) & 0x3FFFFF;
             if ((pte1_ppn & 0x3FF) != 0) {
-                page_fault(access_type);
+                page_fault(virt, access_type);
                 return {0, 0};
             } else {
-                if (check_access(pte1, access_type) == 0) {
+                if (check_access(virt, pte1, access_type) == 0) {
                     return {0, 0};
                 } else {
                     uint32_t physical_addr = ((pte1_ppn << 12) | (vpn0 << 12)) | offset;
@@ -81,14 +81,14 @@ CPU::Translation CPU::translate(uint32_t virt, uint32_t access_type) {
             }
         }
     } else {
-        page_fault(access_type);
+        page_fault(virt, access_type);
         return {0, 0};
     }
 }
 template <typename T>
 T CPU::read_memory(uint32_t virt, uint32_t access_type) {
     if (privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
-        return bus->ram.read<T>(virt);
+        return bus->read<T>(virt);
     } else {
         // TLB lookup
         uint32_t full_vpn = virt >> 12;
@@ -114,7 +114,39 @@ T CPU::read_memory(uint32_t virt, uint32_t access_type) {
         if (trap_pending) {
             return 0;
         } else {
-            return bus->ram.read<T>(physical_addr);
+            return bus->read<T>(physical_addr);
+        }
+    }
+}
+template <typename T>
+void CPU::write_memory(uint32_t virt, T val) {
+    if (privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
+        bus->write<T>(virt, val);
+        return;
+    } else {
+        // TLB lookup
+        uint32_t full_vpn = virt >> 12;
+        uint32_t tlb_index = full_vpn & 0xFF;
+        uint32_t physical_addr = 0;
+        if (tlb[tlb_index].valid && tlb[tlb_index].vpn == full_vpn) {
+            if (check_access(tlb[tlb_index].permissions, access_type) == 1) {
+                uint32_t offset = virt & 0xFFF;
+                physical_addr = (tlb[tlb_index].ppn << 12) | offset;
+            } else {
+                return;
+            }
+        } else {
+            Translation result = translate(virt, access_type);
+            // update physical_addr for bus->ram.read()
+            physical_addr = result.physical_addr;
+            if (!trap_pending) {
+                // update TLB
+                tlb[tlb_index] = TLB_Entry{full_vpn, physical_addr >> 12, result.permissions, 1};
+            }
+        }
+        // check if trapped
+        if (!trap_pending) {
+            bus->write<T>(physical_addr, val);
         }
     }
 }
@@ -125,17 +157,21 @@ void CPU::tick() {
     minstret++;
     // update pc, current instruction, opcode
     pc = next_pc;
-    inst_reg = bus->read<uint32_t>(pc);
+    inst_reg = read_memory<uint32_t>(pc, ACCESS_FETCH);
+    if (trap_pending) {
+        // error reading instruction
+        return;
+    }
     uint32_t opcode = inst_reg & 0x7F;
     // default value for next_pc (can be overriden)
     next_pc = pc + 4;
     // update MSIP (software interrupt pending) and MTIP (timer interrupt pending) from CLINT
-    if (bus->clint.MTIP) {
+    if (bus->clint->MTIP) {
         set_csr(CSR_MIP, get_csr(CSR_MIP) | (1 << 7));
     } else {
         set_csr(CSR_MIP, get_csr(CSR_MIP) & ~(1 << 7));
     }
-    if (bus->clint.MSIP) {
+    if (bus->clint->MSIP) {
         set_csr(CSR_MIP, get_csr(CSR_MIP) | (1 << 3));
     } else {
         set_csr(CSR_MIP, get_csr(CSR_MIP) & ~(1 << 3));
@@ -221,7 +257,7 @@ void CPU::tick() {
                             }
                             break;
                         default:
-                            take_trap(CAUSE_ILLEGALI);
+                            take_trap(CAUSE_ILLEGALI, inst_reg);
                     }
                     break;
                 default:
@@ -269,7 +305,7 @@ void CPU::tick() {
                             set_reg(rd(), (reg_file[rs1()] & reg_file[rs2()]));
                             break;
                         default:
-                            take_trap(CAUSE_ILLEGALI);
+                            take_trap(CAUSE_ILLEGALI, inst_reg);
                 }
             }
             break;
@@ -313,91 +349,157 @@ void CPU::tick() {
                     set_reg(rd(), (reg_file[rs1()] & imm_i()));
                     break;
                 default:
-                    take_trap(CAUSE_ILLEGALI);
+                    take_trap(CAUSE_ILLEGALI, inst_reg);
             }
             break;
         case LOAD:
             switch (funct3()) {
                 case 0x0:
                     // Load Byte (sign extend)
-                    set_reg(rd(), static_cast<uint32_t>(static_cast<int8_t>(bus->read<uint8_t>(reg_file[rs1()] + imm_i()))));
+                    temp = read_memory<uint8_t>(reg_file[rs1()] + imm_i(), ACCESS_READ);
+                    if (!trap_pending) {
+                        set_reg(rd(), static_cast<uint32_t>(static_cast<int8_t>(temp)));
+                    }
                     break;
                 case 0x1:
                     // Load Halfword (sign extend)
-                    set_reg(rd(), static_cast<uint32_t>(static_cast<int16_t>(bus->read<uint16_t>(reg_file[rs1()] + imm_i()))));
+                    temp = read_memory<uint16_t>(reg_file[rs1()] + imm_i(), ACCESS_READ);
+                    if (!trap_pending) {
+                        set_reg(rd(), static_cast<uint32_t>(static_cast<int16_t>(temp)));
+                    }
                     break;
                 case 0x2:
                     // Load Word (sign extend)
-                    set_reg(rd(), bus->read<uint32_t>(reg_file[rs1()] + imm_i()));
+                    temp = read_memory<uint32_t>(reg_file[rs1()] + imm_i(), ACCESS_READ);
+                    if (!trap_pending) {
+                        set_reg(rd(), temp);
+                    }
                     break;
                 case 0x4:
                     // Load Byte (zero extend)
-                    set_reg(rd(), static_cast<uint32_t>(bus->read<uint8_t>(reg_file[rs1()] + imm_i())));
+                    temp = read_memory<uint8_t>(reg_file[rs1()] + imm_i(), ACCESS_READ);
+                    if (!trap_pending) {
+                        set_reg(rd(), static_cast<uint32_t>(temp));
+                    }
                     break;
                 case 0x5:
                     // Load Halfword (zero extend)
-                    set_reg(rd(), static_cast<uint32_t>(bus->read<uint16_t>(reg_file[rs1()] + imm_i())));
+                    temp = read_memory<uint16_t>(reg_file[rs1()] + imm_i(), ACCESS_READ);
+                    if (!trap_pending) {
+                        set_reg(rd(), static_cast<uint32_t>(temp));
+                    }
                     break;
                 default:
-                    take_trap(CAUSE_ILLEGALI);
+                    take_trap(CAUSE_ILLEGALI, inst_reg);
             }
             break;
         case STORE:
             switch (funct3()) {
                 case 0x0:
                     // Store Byte
-                    bus->write<uint8_t>(reg_file[rs1()] + imm_s(), static_cast<uint8_t>(reg_file[rs2()]));
+                    write_memory<uint8_t>(reg_file[rs1()] + imm_s(), static_cast<uint8_t>(reg_file[rs2()]));
                     break;
                 case 0x1:
                     // Store Halfword
-                    bus->write<uint16_t>(reg_file[rs1()] + imm_s(), static_cast<uint16_t>(reg_file[rs2()]));
+                    write_memory<uint16_t>(reg_file[rs1()] + imm_s(), static_cast<uint16_t>(reg_file[rs2()]));
                     break;
                 case 0x2:
                     // Store Word
-                    bus->write<uint32_t>(reg_file[rs1()] + imm_s(), reg_file[rs2()]);
+                    write_memory<uint32_t>(reg_file[rs1()] + imm_s(), reg_file[rs2()]);
                     break;
                 default:
-                    take_trap(CAUSE_ILLEGALI);
+                    take_trap(CAUSE_ILLEGALI, inst_reg);
             }
             break;
         case BRANCH:
             switch (funct3()) {
                 case 0x0:
                     // BEQ
-                    if (reg_file[rs1()] == reg_file[rs2()]) next_pc = pc + imm_b();
+                    temp = pc + imm_b();
+                    if (reg_file[rs1()] == reg_file[rs2()]) {
+                        if ((temp & 0x3) != 0) {
+                            take_trap(CAUSE_INSTRUCTION_ALIGN, temp);
+                        } else {
+                            next_pc = temp;
+                        }
+                    }
                     break;
                 case 0x1:
                     // BNE
-                    if (reg_file[rs1()] != reg_file[rs2()]) next_pc = pc + imm_b();
+                    temp = pc + imm_b();
+                    if (reg_file[rs1()] != reg_file[rs2()]) {
+                        if ((temp & 0x3) != 0) {
+                            take_trap(CAUSE_INSTRUCTION_ALIGN, temp);
+                        } else {
+                            next_pc = temp;
+                        }
+                    }
                     break;
                 case 0x4:
                     // BLT (signed)
-                    if (static_cast<int32_t>(reg_file[rs1()]) < static_cast<int32_t>(reg_file[rs2()])) next_pc = pc + imm_b();
+                    temp = pc + imm_b();
+                    if (static_cast<int32_t>(reg_file[rs1()]) < static_cast<int32_t>(reg_file[rs2()])) {
+                        if ((temp & 0x3) != 0) {
+                            take_trap(CAUSE_INSTRUCTION_ALIGN, temp);
+                        } else {
+                            next_pc = temp;
+                        }
+                    }
                     break;
                 case 0x5:
                     // BGE (signed)
-                    if (static_cast<int32_t>(reg_file[rs1()]) >= static_cast<int32_t>(reg_file[rs2()])) next_pc = pc + imm_b();
+                    temp = pc + imm_b();
+                    if (static_cast<int32_t>(reg_file[rs1()]) >= static_cast<int32_t>(reg_file[rs2()])) {
+                        if ((temp & 0x3) != 0) {
+                            take_trap(CAUSE_INSTRUCTION_ALIGN, temp);
+                        } else {
+                            next_pc = temp;
+                        }
+                    }
                     break;
                 case 0x6:
                     // BLTU
-                    if (reg_file[rs1()] < reg_file[rs2()]) next_pc = pc + imm_b();
+                    temp = pc + imm_b();
+                    if (reg_file[rs1()] < reg_file[rs2()]) {
+                        if ((temp & 0x3) != 0) {
+                            take_trap(CAUSE_INSTRUCTION_ALIGN, temp);
+                        } else {
+                            next_pc = temp;
+                        }
+                    }
                     break;
                 case 0x7:
                     // BGEU
-                    if (reg_file[rs1()] >= reg_file[rs2()]) next_pc = pc + imm_b();
+                    temp = pc + imm_b();
+                    if (reg_file[rs1()] >= reg_file[rs2()]) {
+                        if ((temp & 0x3) != 0) {
+                            take_trap(CAUSE_INSTRUCTION_ALIGN, temp);
+                        } else {
+                            next_pc = temp;
+                        }
+                    }
                     break;
                 default:
-                    take_trap(CAUSE_ILLEGALI);
+                    take_trap(CAUSE_ILLEGALI, inst_reg);
             }
             break;
         case JAL:
-            set_reg(rd(), next_pc);
-            next_pc = pc + imm_j();
+            temp = pc + imm_j();
+            if ((temp & 0x3) != 0) {
+                take_trap(CAUSE_INSTRUCTION_ALIGN, temp);
+            } else {
+                set_reg(rd(), next_pc);
+                next_pc = temp;
+            }
             break;
         case JALR:
             temp = (reg_file[rs1()] + imm_i()) & ~1;
-            set_reg(rd(), next_pc);
-            next_pc = temp;
+            if ((temp & 0x3) != 0) {
+                take_trap(CAUSE_INSTRUCTION_ALIGN, temp);
+            } else {
+                set_reg(rd(), next_pc);
+                next_pc = temp;
+            }
             break;
         case LUI:
             // imm_u already shifted
@@ -423,6 +525,9 @@ void CPU::tick() {
                                     break;
                                 case 0:
                                     take_trap(CAUSE_ECALL_U);
+                                    break;
+                                default:
+                                    take_trap(CAUSE_ILLEGALI, inst_reg);
                             }
                             break;
                         case 0x001:
@@ -432,7 +537,7 @@ void CPU::tick() {
                         case 0x102:
                             // SRET
                             if (privilege == 0) {
-                                take_trap(CAUSE_ILLEGALI);
+                                take_trap(CAUSE_ILLEGALI, inst_reg);
                                 break;
                             }
                             next_pc = get_csr(CSR_SEPC);
@@ -445,7 +550,7 @@ void CPU::tick() {
                         case 0x302:
                             // MRET
                             if (privilege < 3) {
-                                take_trap(CAUSE_ILLEGALI);
+                                take_trap(CAUSE_ILLEGALI, inst_reg);
                                 break;
                             }
                             next_pc = get_csr(CSR_MEPC);
@@ -456,7 +561,7 @@ void CPU::tick() {
                             set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) & ~(3U << 11));
                             break;
                         default:
-                            take_trap(CAUSE_ILLEGALI);
+                            take_trap(CAUSE_ILLEGALI, inst_reg);
                             break;
                     }
                     break;
@@ -511,18 +616,18 @@ void CPU::tick() {
                         // SFENCE.VMA
                         if (privilege > 0) {
                             if (privilege == 1 && ((get_csr(CSR_MSTATUS) >> 20) & 1)) {
-                                take_trap(CAUSE_ILLEGALI);
+                                take_trap(CAUSE_ILLEGALI, inst_reg);
                                 break; 
                             } else {
                                 flush_tlb();
                                 break;
                             }
                         } else {
-                            take_trap(CAUSE_ILLEGALI);
+                            take_trap(CAUSE_ILLEGALI, inst_reg);
                             break;
                         }
                     } else {
-                        take_trap(CAUSE_ILLEGALI);
+                        take_trap(CAUSE_ILLEGALI, inst_reg);
                     }
             }
             break;
@@ -530,7 +635,7 @@ void CPU::tick() {
             if ((reg_file[rs1()] & 0b11) != 0) {
                 set_csr(CSR_MEPC, pc);
                 if (funct5() == 0x02) {
-                    take_trap(CAUSE_ATOMIC_LOAD_ALIGN);
+                    take_trap(CAUSE_LOAD_ALIGN);
                 } else {
                     take_trap(CAUSE_ATOMIC_ALIGN);
                 }
@@ -540,28 +645,32 @@ void CPU::tick() {
                 case 0x00:
                     // AMOADD.W
                     reservation_valid = false;
-                    temp = bus->read<uint32_t>(reg_file[rs1()]);
-                    bus->write<uint32_t>(reg_file[rs1()], temp + reg_file[rs2()]);
-                    set_reg(rd(), temp);
+                    temp = read_memory<uint32_t>(reg_file[rs1()], ACCESS_READ);
+                    if (!trap_pending) {
+                        write_memory<uint32_t>(reg_file[rs1()], temp + reg_file[rs2()]);
+                        set_reg(rd(), temp);
+                    }
                     break;
                 case 0x01:
                     // AMOSWAP.W
                     reservation_valid = false;
-                    temp = bus->read<uint32_t>(reg_file[rs1()]);
-                    bus->write<uint32_t>(reg_file[rs1()], reg_file[rs2()]);
-                    set_reg(rd(), temp);
+                    temp = read_memory<uint32_t>(reg_file[rs1()], ACCESS_READ);
+                    if (!trap_pending) {
+                        write_memory<uint32_t>(reg_file[rs1()], reg_file[rs2()]);
+                        set_reg(rd(), temp);
+                    }
                     break;
                 case 0x02:
                     // LR.W
                     temp = reg_file[rs1()];
-                    set_reg(rd(), bus->read<uint32_t>(temp));
+                    set_reg(rd(), read_memory<uint32_t>(temp, ACCESS_READ));
                     reservation_addr = temp;
                     reservation_valid = true;
                     break;
                 case 0x03:
                     // SC.W
                     if (reservation_valid && reg_file[rs1()] == reservation_addr) {
-                        bus->write<uint32_t>(reg_file[rs1()], reg_file[rs2()]);
+                        write_memory<uint32_t>(reg_file[rs1()], reg_file[rs2()]);
                         reservation_addr = 0xFFFFFFFF;
                         set_reg(rd(), 0);
                     } else {
@@ -572,54 +681,68 @@ void CPU::tick() {
                 case 0x04:
                     // AMOXOR.W
                     reservation_valid = false;
-                    temp = bus->read<uint32_t>(reg_file[rs1()]);
-                    bus->write<uint32_t>(reg_file[rs1()], temp ^ reg_file[rs2()]);
-                    set_reg(rd(), temp);
+                    temp = read_memory<uint32_t>(reg_file[rs1()], ACCESS_READ);
+                    if (!trap_pending) {
+                        write_memory<uint32_t>(reg_file[rs1()], temp ^ reg_file[rs2()]);
+                        set_reg(rd(), temp);
+                    }
                     break;
                 case 0x08:
                     // AMOOR.W
                     reservation_valid = false;
-                    temp = bus->read<uint32_t>(reg_file[rs1()]);
-                    bus->write<uint32_t>(reg_file[rs1()], temp | reg_file[rs2()]);
-                    set_reg(rd(), temp);
+                    temp = read_memory<uint32_t>(reg_file[rs1()], ACCESS_READ);
+                    if (!trap_pending) {
+                        write_memory<uint32_t>(reg_file[rs1()], temp | reg_file[rs2()]);
+                        set_reg(rd(), temp);
+                    }
                     break;
                 case 0x0C:
                     // AMOAND.W
                     reservation_valid = false;
-                    temp = bus->read<uint32_t>(reg_file[rs1()]);
-                    bus->write<uint32_t>(reg_file[rs1()], temp & reg_file[rs2()]);
-                    set_reg(rd(), temp);
+                    temp = read_memory<uint32_t>(reg_file[rs1()], ACCESS_READ);
+                    if (!trap_pending) {
+                        write_memory<uint32_t>(reg_file[rs1()], temp & reg_file[rs2()]);
+                        set_reg(rd(), temp);
+                    }
                     break;
                 case 0x10:
                     // AMOMIN.W
                     reservation_valid = false;
-                    temp = bus->read<uint32_t>(reg_file[rs1()]);
-                    bus->write<uint32_t>(reg_file[rs1()], std::min(static_cast<int32_t>(temp), static_cast<int32_t>(reg_file[rs2()])));
-                    set_reg(rd(), temp);
+                    temp = read_memory<uint32_t>(reg_file[rs1()], ACCESS_READ);
+                    if (!trap_pending) {
+                        write_memory<uint32_t>(reg_file[rs1()], std::min(static_cast<int32_t>(temp), static_cast<int32_t>(reg_file[rs2()])));
+                        set_reg(rd(), temp);
+                    }
                     break;
                 case 0x14:
                     // AMOMAX.W
                     reservation_valid = false;
-                    temp = bus->read<uint32_t>(reg_file[rs1()]);
-                    bus->write<uint32_t>(reg_file[rs1()], std::max(static_cast<int32_t>(temp), static_cast<int32_t>(reg_file[rs2()])));
-                    set_reg(rd(), temp);
+                    temp = read_memory<uint32_t>(reg_file[rs1()], ACCESS_READ);
+                    if (!trap_pending) {
+                        write_memory<uint32_t>(reg_file[rs1()], std::max(static_cast<int32_t>(temp), static_cast<int32_t>(reg_file[rs2()])));
+                        set_reg(rd(), temp);
+                    }
                     break;
                 case 0x18:
                     // AMOMINU.W
                     reservation_valid = false;
-                    temp = bus->read<uint32_t>(reg_file[rs1()]);
-                    bus->write<uint32_t>(reg_file[rs1()], std::min(temp, reg_file[rs2()]));
-                    set_reg(rd(), temp);
+                    temp = read_memory<uint32_t>(reg_file[rs1()], ACCESS_READ);
+                    if (!trap_pending) {
+                        write_memory<uint32_t>(reg_file[rs1()], std::min(temp, reg_file[rs2()]));
+                        set_reg(rd(), temp);
+                    }
                     break;
                 case 0x1C:
                     // AMOMAXU.W
                     reservation_valid = false;
-                    temp = bus->read<uint32_t>(reg_file[rs1()]);
-                    bus->write<uint32_t>(reg_file[rs1()], std::max(temp, reg_file[rs2()]));
-                    set_reg(rd(), temp);
+                    temp = read_memory<uint32_t>(reg_file[rs1()], ACCESS_READ);
+                    if (!trap_pending) {
+                        write_memory<uint32_t>(reg_file[rs1()], std::max(temp, reg_file[rs2()]));
+                        set_reg(rd(), temp);
+                    }
                     break;
                 default:
-                    take_trap(CAUSE_ILLEGALI);
+                    take_trap(CAUSE_ILLEGALI, inst_reg);
             }
             break;
         case MISC_MEM:
@@ -631,10 +754,10 @@ void CPU::tick() {
                     // FENCE.I
                     break;
                 default:
-                    take_trap(CAUSE_ILLEGALI);
+                    take_trap(CAUSE_ILLEGALI, inst_reg);
             }
             break;
         default:
-            take_trap(CAUSE_ILLEGALI);
+            take_trap(CAUSE_ILLEGALI, inst_reg);
     }
 };

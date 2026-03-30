@@ -64,9 +64,10 @@ class CPU {
         static constexpr uint32_t CAUSE_MSI = 0x80000003;
         static constexpr uint32_t CAUSE_MTI = 0x80000007;
         static constexpr uint32_t CAUSE_MEI = 0x8000000B;
+        static constexpr uint32_t CAUSE_INSTRUCTION_ALIGN = 0x00000000;
         static constexpr uint32_t CAUSE_ILLEGALI = 0x00000002;
         static constexpr uint32_t CAUSE_EBREAK = 0x00000003;
-        static constexpr uint32_t CAUSE_ATOMIC_LOAD_ALIGN = 0x00000004;
+        static constexpr uint32_t CAUSE_LOAD_ALIGN = 0x00000004;
         static constexpr uint32_t CAUSE_ATOMIC_ALIGN = 0x00000006;
         static constexpr uint32_t CAUSE_ECALL_U = 0x00000008;
         static constexpr uint32_t CAUSE_ECALL_S = 0x00000009;
@@ -74,6 +75,10 @@ class CPU {
         static constexpr uint32_t CAUSE_PAGE_FAULT_INST = 0x0000000C;
         static constexpr uint32_t CAUSE_PAGE_FAULT_LOAD = 0x0000000D;
         static constexpr uint32_t CAUSE_PAGE_FAULT_STORE = 0x0000000F;
+        // access types
+        static constexpr uint32_t ACCESS_READ = 0;
+        static constexpr uint32_t ACCESS_WRITE = 1;
+        static constexpr uint32_t ACCESS_FETCH = 2;
         // registers
         uint32_t reg_file[32] = {0};
         uint32_t csr_file[4096] = {0};
@@ -91,23 +96,25 @@ class CPU {
         uint64_t minstret = 0;
         CPU(Bus *busptr, uint32_t ram_start);
         void tick();
-        uint32_t check_access(uint32_t pte, uint32_t access_type);
+        uint32_t check_access(uint32_t virt, uint32_t pte, uint32_t access_type);
         Translation translate(uint32_t virt, uint32_t access_type);
         template <typename T>
         T read_memory(uint32_t virt, uint32_t access_type);
+        template <typename T>
+        void write_memory(uint32_t virt, T val);
     private:
         Bus *bus;
         // helper function
-        inline void page_fault(uint32_t access_type) {
+        inline void page_fault(uint32_t virt, uint32_t access_type) {
             switch (access_type) {
                 case 0:
-                    take_trap(CAUSE_PAGE_FAULT_LOAD);
+                    take_trap(CAUSE_PAGE_FAULT_LOAD, virt);
                     break;
                 case 1:
-                    take_trap(CAUSE_PAGE_FAULT_STORE);
+                    take_trap(CAUSE_PAGE_FAULT_STORE, virt);
                     break;
                 default:
-                    take_trap(CAUSE_PAGE_FAULT_INST);
+                    take_trap(CAUSE_PAGE_FAULT_INST, virt);
             }
         }
         inline void flush_tlb() {
@@ -124,7 +131,7 @@ class CPU {
         inline uint32_t get_csr(uint32_t csr) {
             if (((csr >> 8) & 3) > privilege) {
                 // not high enough permission
-                take_trap(CAUSE_ILLEGALI);
+                take_trap(CAUSE_ILLEGALI, inst_reg);
                 return 0;
             } else {
                 switch (csr) {
@@ -157,11 +164,11 @@ class CPU {
         inline void set_csr(uint32_t csr, uint32_t val) {
             if (((csr >> 10) & 3) == 0b11) {
                 // readonly
-                take_trap(CAUSE_ILLEGALI);
+                take_trap(CAUSE_ILLEGALI, inst_reg);
             } else {
                 if (((csr >> 8) & 3) > privilege) {
                     // not high enough permission
-                    take_trap(CAUSE_ILLEGALI);
+                    take_trap(CAUSE_ILLEGALI, inst_reg);
                 } else {
                     switch (csr) {
                         case 0:

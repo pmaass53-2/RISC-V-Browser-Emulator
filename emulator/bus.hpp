@@ -21,11 +21,11 @@ constexpr uint32_t RAM_SIZE = 0x02000000; // 32MB
 class Bus {
     public:
         // hardware components
-        CLINT clint;
-        PLIC plic;
-        UART uart;
-        RAM ram;
-        Bus(CLINT clint, PLIC plic, UART uart, RAM ram) : clint(clint), plic(plic), uart(uart), ram(ram) {
+        CLINT *clint;
+        PLIC *plic;
+        UART *uart;
+        RAM *ram;
+        Bus(CLINT *clint, PLIC *plic, UART *uart, RAM *ram) : clint(clint), plic(plic), uart(uart), ram(ram) {
             // init
         }
         // bus interface
