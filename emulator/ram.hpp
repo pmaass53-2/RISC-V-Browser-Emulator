@@ -11,9 +11,9 @@ class RAM {
     alignas(16) uint8_t data[MEMORY_SIZE];
 
     public:
-        // initialize memory to zero
-        RAM() { std::memset(data, 0, MEMORY_SIZE); }
-
+        RAM() {
+            std::memset(data, 0, MEMORY_SIZE);
+        }
         inline void load(const uint8_t *value, uint32_t size) noexcept {
             if (size > MEMORY_SIZE) size = MEMORY_SIZE;
             std::memcpy(data, value, size);

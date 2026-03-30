@@ -6,7 +6,120 @@
 
 CPU::CPU(Bus* busptr, uint32_t ram_start) : bus(busptr), next_pc(ram_start) {
 }
+uint32_t CPU::check_access(uint32_t pte, uint32_t access_type) {
+    bool r = (pte >> 1) & 0x1;
+    bool w = (pte >> 2) & 0x1;
+    bool x = (pte >> 3) & 0x1;
+    bool u = (pte >> 4) & 0x1;
+    if (privilege == 0 && u == 0) {
+        page_fault(access_type);
+        return 0;
+    }
+    if (privilege == 1 && u == 1) {
+        page_fault(access_type);
+        return 0;
+    }
+    if (access_type == 0 && r == 0) {
+        take_trap(CAUSE_PAGE_FAULT_LOAD);
+        return 0;
+    }
+    if (access_type == 1 && w == 0) {
+        take_trap(CAUSE_PAGE_FAULT_STORE);
+        return 0;
+    }
+    if (access_type == 2 && x == 0) {
+        take_trap(CAUSE_PAGE_FAULT_INST);
+        return 0;
+    }
+    return 1;
+}
+CPU::Translation CPU::translate(uint32_t virt, uint32_t access_type) {
+    // note: direct CSR access for performance
+    uint32_t offset = virt & 0xFFF;
+    uint32_t vpn0 = (virt >> 12) & 0x3FF;
+    uint32_t vpn1 = (virt >> 22) & 0x3FF;
+    uint32_t pte1_address = ((csr_file[CSR_SATP] & 0x3FFFFF) * 4096) + (vpn1 * 4);
+    uint32_t pte1 = bus->ram.read<uint32_t>(pte1_address);
+    bool pte1_valid = pte1 & 0x1;
+    if (pte1_valid) {
+        // simplified form, extract RWX
+        if ((pte1 & 0xE) == 0) {
+            // pointer
+            uint32_t pte0_address = (((pte1 >> 10) & 0x3FFFFF) * 4096) + (vpn0 * 4);
+            uint32_t pte0 = bus->ram.read<uint32_t>(pte0_address);
+            bool pte0_valid = pte0 & 0x1;
+            if (pte0_valid) {
+                if ((pte0 & 0xE) == 0) {
+                    page_fault(access_type);
+                    return {0, 0};
+                } else {
+                    if (check_access(pte0, access_type) == 0) {
+                        return {0, 0};
+                    } else {
+                        uint32_t ppn = (pte0 >> 10) & 0x3FFFFF;
+                        uint32_t physical_addr = (ppn << 12) | offset;
+                        return {physical_addr, pte0};
+                    }
+                }
+            } else {
+                page_fault(access_type);
+                return {0, 0};
+            }
+        } else {
+            // superpage (4MB)
+            uint32_t pte1_ppn = (pte1 >> 10) & 0x3FFFFF;
+            if ((pte1_ppn & 0x3FF) != 0) {
+                page_fault(access_type);
+                return {0, 0};
+            } else {
+                if (check_access(pte1, access_type) == 0) {
+                    return {0, 0};
+                } else {
+                    uint32_t physical_addr = ((pte1_ppn << 12) | (vpn0 << 12)) | offset;
+                    return {physical_addr, pte1};
+                }
+            }
+        }
+    } else {
+        page_fault(access_type);
+        return {0, 0};
+    }
+}
+template <typename T>
+T CPU::read_memory(uint32_t virt, uint32_t access_type) {
+    if (privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
+        return bus->ram.read<T>(virt);
+    } else {
+        // TLB lookup
+        uint32_t full_vpn = virt >> 12;
+        uint32_t tlb_index = full_vpn & 0xFF;
+        uint32_t physical_addr = 0;
+        if (tlb[tlb_index].valid && tlb[tlb_index].vpn == full_vpn) {
+            if (check_access(tlb[tlb_index].permissions, access_type) == 1) {
+                uint32_t offset = virt & 0xFFF;
+                physical_addr = (tlb[tlb_index].ppn << 12) | offset;
+            } else {
+                return 0;
+            }
+        } else {
+            Translation result = translate(virt, access_type);
+            // update physical_addr for bus->ram.read()
+            physical_addr = result.physical_addr;
+            if (!trap_pending) {
+                // update TLB
+                tlb[tlb_index] = TLB_Entry{full_vpn, physical_addr >> 12, result.permissions, 1};
+            }
+        }
+        // check if trapped
+        if (trap_pending) {
+            return 0;
+        } else {
+            return bus->ram.read<T>(physical_addr);
+        }
+    }
+}
 void CPU::tick() {
+    trap_pending = false;
     // increment instructions executed
     mcycle++;
     minstret++;
@@ -394,7 +507,23 @@ void CPU::tick() {
                     set_reg(rd(), temp);
                     break;
                 default:
-                    take_trap(CAUSE_ILLEGALI);
+                    if (funct7() == 0x09) {
+                        // SFENCE.VMA
+                        if (privilege > 0) {
+                            if (privilege == 1 && ((get_csr(CSR_MSTATUS) >> 20) & 1)) {
+                                take_trap(CAUSE_ILLEGALI);
+                                break; 
+                            } else {
+                                flush_tlb();
+                                break;
+                            }
+                        } else {
+                            take_trap(CAUSE_ILLEGALI);
+                            break;
+                        }
+                    } else {
+                        take_trap(CAUSE_ILLEGALI);
+                    }
             }
             break;
         case ATOMIC:

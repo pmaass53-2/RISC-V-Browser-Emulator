@@ -5,6 +5,15 @@
 
 class CPU {
     public:
+        // structs
+        struct TLB_Entry {
+            uint32_t vpn, ppn, permissions, valid;
+        };
+        struct Translation {
+            uint32_t physical_addr, permissions;
+        };
+        // config
+        static constexpr uint32_t TLB_SIZE = 256;
         // opcode types
         static constexpr uint8_t OP = 0b0110011;
         static constexpr uint8_t OP_IMM = 0b0010011;
@@ -62,9 +71,13 @@ class CPU {
         static constexpr uint32_t CAUSE_ECALL_U = 0x00000008;
         static constexpr uint32_t CAUSE_ECALL_S = 0x00000009;
         static constexpr uint32_t CAUSE_ECALL_M = 0x0000000B;
+        static constexpr uint32_t CAUSE_PAGE_FAULT_INST = 0x0000000C;
+        static constexpr uint32_t CAUSE_PAGE_FAULT_LOAD = 0x0000000D;
+        static constexpr uint32_t CAUSE_PAGE_FAULT_STORE = 0x0000000F;
         // registers
         uint32_t reg_file[32] = {0};
         uint32_t csr_file[4096] = {0};
+        TLB_Entry tlb[TLB_SIZE] = {};
         uint32_t inst_reg = 0;
         uint32_t pc = 0;
         uint32_t next_pc = 0;
@@ -72,14 +85,36 @@ class CPU {
         uint32_t reservation_addr = 0xFFFFFFFF;
         uint32_t privilege = 3;
         bool reservation_valid = false;
+        bool trap_pending = false;
         // special 64-bit registers
         uint64_t mcycle = 0;
         uint64_t minstret = 0;
         CPU(Bus *busptr, uint32_t ram_start);
         void tick();
+        uint32_t check_access(uint32_t pte, uint32_t access_type);
+        Translation translate(uint32_t virt, uint32_t access_type);
+        template <typename T>
+        T read_memory(uint32_t virt, uint32_t access_type);
     private:
         Bus *bus;
         // helper function
+        inline void page_fault(uint32_t access_type) {
+            switch (access_type) {
+                case 0:
+                    take_trap(CAUSE_PAGE_FAULT_LOAD);
+                    break;
+                case 1:
+                    take_trap(CAUSE_PAGE_FAULT_STORE);
+                    break;
+                default:
+                    take_trap(CAUSE_PAGE_FAULT_INST);
+            }
+        }
+        inline void flush_tlb() {
+            for (int i = 0; i < 256; i++) {
+                tlb[i].valid = false;
+            }
+        }
         inline void set_reg(uint8_t rd, uint32_t val) {
             if (rd != 0) reg_file[rd] = val;
         }
@@ -140,6 +175,10 @@ class CPU {
                         case CSR_SIP:
                             csr_file[CSR_MIP] = (csr_file[CSR_MIP] & ~csr_file[CSR_MIDELEG]) | (val & csr_file[CSR_MIDELEG]);
                             break;
+                        case CSR_SATP:
+                            csr_file[CSR_SATP] = val;
+                            flush_tlb();
+                            break;
                         default:
                             csr_file[csr] = val;
                     }
@@ -178,6 +217,7 @@ class CPU {
         }
         void take_trap(uint32_t cause, uint32_t tval = 0) {
             reservation_valid = false;
+            trap_pending = true;
             uint32_t exception_code = cause & 0x7FFFFFFF;
             bool delegate = false;
             if (privilege <= 1) {
