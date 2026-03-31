@@ -3,6 +3,8 @@
 
 #include "bus.hpp"
 
+#include <iostream>
+
 class CPU {
     public:
         // structs
@@ -28,6 +30,7 @@ class CPU {
         static constexpr uint8_t ATOMIC = 0b0101111;
         static constexpr uint8_t MISC_MEM = 0b0001111;
         // Machine mode CSRs
+        static constexpr uint32_t CSR_SEED = 0x015;
         static constexpr uint32_t CSR_MSTATUS = 0x300;
         static constexpr uint32_t CSR_MISA = 0x301;
         static constexpr uint32_t CSR_MEDELEG = 0x302;
@@ -91,12 +94,14 @@ class CPU {
         uint32_t privilege = 3;
         bool reservation_valid = false;
         bool trap_pending = false;
+        bool debug_mode = false;
         // special 64-bit registers
         uint64_t mcycle = 0;
         uint64_t minstret = 0;
         CPU(Bus *busptr, uint32_t ram_start);
         void reset(uint32_t start);
         void tick();
+        void dump_state();
         uint32_t check_access(uint32_t virt, uint32_t pte, uint32_t access_type);
         Translation translate(uint32_t virt, uint32_t access_type);
         template <typename T>
@@ -136,14 +141,38 @@ class CPU {
                 return 0;
             } else {
                 switch (csr) {
-                    case CSR_SSTATUS:
-                        return csr_file[CSR_MSTATUS] & MASK_SSTATUS;
+                    case CSR_MSTATUS:
+                        return csr_file[CSR_MSTATUS];
                         break;
-                    case CSR_SIE:
-                        return csr_file[CSR_MIE] & csr_file[CSR_MIDELEG];
+                    case CSR_MISA:
+                        return csr_file[CSR_MISA];
                         break;
-                    case CSR_SIP:
-                        return csr_file[CSR_MIP] & csr_file[CSR_MIDELEG];
+                    case CSR_MEDELEG:
+                        return csr_file[CSR_MEDELEG];
+                        break;
+                    case CSR_MIDELEG:
+                        return csr_file[CSR_MIDELEG];
+                        break;
+                    case CSR_MIE:
+                        return csr_file[CSR_MIE];
+                        break;
+                    case CSR_MTVEC:
+                        return csr_file[CSR_MTVEC];
+                        break;
+                    case CSR_MSCRATCH:
+                        return csr_file[CSR_MSCRATCH];
+                        break;
+                    case CSR_MEPC:
+                        return csr_file[CSR_MEPC];
+                        break;
+                    case CSR_MCAUSE:
+                        return csr_file[CSR_MCAUSE];
+                        break;
+                    case CSR_MTVAL:
+                        return csr_file[CSR_MTVAL];
+                        break;
+                    case CSR_MIP:
+                        return csr_file[CSR_MIP];
                         break;
                     case CSR_MCYCLE:
                         return static_cast<uint32_t>(mcycle);
@@ -157,8 +186,46 @@ class CPU {
                     case CSR_MINSTRETH:
                         return static_cast<uint32_t>(minstret >> 32);
                         break;
+                    case CSR_MVENDORID:
+                    case CSR_MARCHID:
+                    case CSR_MIMPID:
+                    case CSR_MHARTID:
+                        return 0;
+                        break;
+                    case CSR_SSTATUS:
+                        return csr_file[CSR_MSTATUS] & MASK_SSTATUS;
+                        break;
+                    case CSR_SIE:
+                        return csr_file[CSR_MIE] & csr_file[CSR_MIDELEG];
+                        break;
+                    case CSR_STVEC:
+                        return csr_file[CSR_STVEC];
+                        break;
+                    case CSR_SSCRATCH:
+                        return csr_file[CSR_SSCRATCH];
+                        break;
+                    case CSR_SEPC:
+                        return csr_file[CSR_SEPC];
+                        break;
+                    case CSR_SCAUSE:
+                        return csr_file[CSR_SCAUSE];
+                        break;
+                    case CSR_STVAL:
+                        return csr_file[CSR_STVAL];
+                        break;
+                    case CSR_SIP:
+                        return csr_file[CSR_MIP] & csr_file[CSR_MIDELEG];
+                        break;
+                    case CSR_SATP:
+                        return csr_file[CSR_SATP];
+                        break;
+                    case CSR_SEED:
+                        // 31:30 OPST (status), 29:16 Reserved (zero), 15:0 entropy
+                        return (2 << 30) | (rand() & 0xFFFF);
+                        break;
                     default:
-                        return csr_file[csr];
+                        take_trap(CAUSE_ILLEGALI, inst_reg);
+                        return 0;
                 }
             }
         }
@@ -172,13 +239,56 @@ class CPU {
                     take_trap(CAUSE_ILLEGALI, inst_reg);
                 } else {
                     switch (csr) {
-                        case 0:
+                        case CSR_MSTATUS:
+                            csr_file[CSR_MSTATUS] = val;
+                            break;
+                        case CSR_MEDELEG:
+                            csr_file[CSR_MEDELEG] = val;
+                            break;
+                        case CSR_MIDELEG:
+                            csr_file[CSR_MIDELEG] = val;
+                            break;
+                        case CSR_MIE:
+                            csr_file[CSR_MIE] = val;
+                            break;
+                        case CSR_MTVEC:
+                            csr_file[CSR_MTVEC] = val;
+                            break;
+                        case CSR_MSCRATCH:
+                            csr_file[CSR_MSCRATCH] = val;
+                            break;
+                        case CSR_MEPC:
+                            csr_file[CSR_MEPC] = val;
+                            break;
+                        case CSR_MCAUSE:
+                            csr_file[CSR_MCAUSE] = val;
+                            break;
+                        case CSR_MTVAL:
+                            csr_file[CSR_MTVAL] = val;
+                            break;
+                        case CSR_MIP:
+                            csr_file[CSR_MIP] = val;
                             break;
                         case CSR_SSTATUS:
                             csr_file[CSR_MSTATUS] = (csr_file[CSR_MSTATUS] & ~MASK_SSTATUS) | (val & MASK_SSTATUS);
                             break;
                         case CSR_SIE:
                             csr_file[CSR_MIE] = (csr_file[CSR_MIE] & ~csr_file[CSR_MIDELEG]) | (val & csr_file[CSR_MIDELEG]);
+                            break;
+                        case CSR_STVEC:
+                            csr_file[CSR_STVEC] = val;
+                            break;
+                        case CSR_SSCRATCH:
+                            csr_file[CSR_SSCRATCH] = val;
+                            break;
+                        case CSR_SEPC:
+                            csr_file[CSR_SEPC] = val;
+                            break;
+                        case CSR_SCAUSE:
+                            csr_file[CSR_SCAUSE] = val;
+                            break;
+                        case CSR_STVAL:
+                            csr_file[CSR_STVAL] = val;
                             break;
                         case CSR_SIP:
                             csr_file[CSR_MIP] = (csr_file[CSR_MIP] & ~csr_file[CSR_MIDELEG]) | (val & csr_file[CSR_MIDELEG]);
@@ -187,8 +297,11 @@ class CPU {
                             csr_file[CSR_SATP] = val;
                             flush_tlb();
                             break;
+                        case CSR_SEED:
+                            // nothing for now
+                            break;
                         default:
-                            csr_file[csr] = val;
+                            take_trap(CAUSE_ILLEGALI, inst_reg);
                     }
                 }
             }
@@ -224,6 +337,9 @@ class CPU {
                 ((inst_reg >> 20) & 0x7FE);
         }
         void take_trap(uint32_t cause, uint32_t tval = 0) {
+            if (debug_mode) {
+                printf("!!! TRAP: cause=%08x tval=%08x pc=%08x\n", cause, tval, pc);
+            }
             reservation_valid = false;
             trap_pending = true;
             uint32_t exception_code = cause & 0x7FFFFFFF;

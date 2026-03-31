@@ -40,16 +40,27 @@ class UART {
                     regs[DLL] = val;
                 } else {
                     regs[THR] = val;
+                    // Transmission always succeeds instantly
+                    regs[LSR] |= 0x60; 
                     EM_ASM({ js_uart_write($0); }, val);
                 }
-            } else if (reg == 1 && dlab) {
-                regs[DLM] = val;
-            } else {
-                // standard registers
-                if (reg != LSR && reg != IIR) {
-                    regs[reg] = val;
+            } else if (reg == 1) {
+                if (dlab) {
+                    regs[DLM] = val;
+                } else {
+                    regs[IER] = val;
                 }
+            } else if (reg == 2) {
+                // FCR (FIFO Control Register) - write only
+                regs[FCR] = val;
+            } else if (reg == 3) {
+                regs[LCR] = val;
+            } else if (reg == 4) {
+                regs[MCR] = val;
+            } else if (reg == 7) {
+                regs[SCR] = val;
             }
+            // IIR (2), LSR (5), MSR (6) are read-only from the CPU's perspective
         }
         uint32_t read_reg(uint32_t offset) {
             uint32_t reg = offset & 0x7;

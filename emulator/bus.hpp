@@ -16,7 +16,7 @@ constexpr uint32_t RAM_BASE = 0x80000000;
 constexpr uint32_t CLINT_SIZE = 0x10000;
 constexpr uint32_t PLIC_SIZE = 0x4000000;
 constexpr uint32_t UART_SIZE = 0x100;
-constexpr uint32_t RAM_SIZE = 0x02000000; // 32MB
+constexpr uint32_t RAM_SIZE = 0x04000000; // 64MB
 
 class Bus {
     public:

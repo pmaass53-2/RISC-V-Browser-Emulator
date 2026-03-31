@@ -36,8 +36,22 @@ extern "C" {
         // Load the bytes into RAM
         bus.ram->load(buffer, size);
         cpu.reset(0x80000000);
+        // Set boot registers for OpenSBI
+        cpu.reg_file[10] = 0;          // a0 = hartid
+        cpu.reg_file[11] = 0x82200000; // a1 = dtb address (FW_PAYLOAD_FDT_OFFSET = 0x2200000)
         is_running = true;
         printf("ROM loaded successfully. Starting CPU...\n");
+    }
+
+    EMSCRIPTEN_KEEPALIVE
+    void uart_push_byte(uint8_t byte) {
+        uart.rx_push(byte);
+    }
+
+    EMSCRIPTEN_KEEPALIVE
+    void set_debug(bool enable) {
+        cpu.debug_mode = enable;
+        printf("Debug mode %s\n", enable ? "enabled" : "disabled");
     }
 }
 

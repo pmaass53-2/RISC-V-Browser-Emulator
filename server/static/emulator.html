@@ -92,6 +92,8 @@
                 if (!file) return;
                 console.log("File selected: " + file.name);
                 file.arrayBuffer().then(buffer => {
+                    // debug
+                    Module._set_debug(true);
                     console.log("Buffer loaded, size: " + buffer.byteLength);
                     status.textContent = "Copying Program..."
                     const bbuff = new Uint8Array(buffer)

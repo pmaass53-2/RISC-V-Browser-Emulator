@@ -3,6 +3,7 @@
 #include "bus.hpp"
 
 #include <algorithm>
+#include <iostream>
 
 CPU::CPU(Bus* busptr, uint32_t ram_start) : bus(busptr), next_pc(ram_start) {
 }
@@ -191,6 +192,9 @@ void CPU::reset(uint32_t start) {
     flush_tlb();
 }
 void CPU::tick() {
+    if (debug_mode) {
+        dump_state();
+    }
     trap_pending = false;
     // increment instructions executed
     mcycle++;
@@ -559,7 +563,20 @@ void CPU::tick() {
         case SYSTEM:
             switch (funct3()) {
                 case 0x0:
-                    // ECALL/EBREAK
+                    // ECALL/EBREAK/WFI/SRET/MRET/SFENCE.VMA
+                    if ((imm_i() >> 5) == 0x09) {
+                        // SFENCE.VMA
+                        if (privilege > 0) {
+                            if (privilege == 1 && ((get_csr(CSR_MSTATUS) >> 20) & 1)) {
+                                take_trap(CAUSE_ILLEGALI, inst_reg);
+                            } else {
+                                flush_tlb();
+                            }
+                        } else {
+                            take_trap(CAUSE_ILLEGALI, inst_reg);
+                        }
+                        break;
+                    }
                     switch(imm_i()) {
                         case 0x000:
                             // ECALL
@@ -581,9 +598,12 @@ void CPU::tick() {
                             // EBREAK
                             take_trap(CAUSE_EBREAK);
                             break;
+                        case 0x105:
+                            // WFI (Wait For Interrupt) - Implement as NOP
+                            break;
                         case 0x102:
                             // SRET
-                            if (privilege == 0 || privilege == 1 && ((get_csr(CSR_MSTATUS) >> 22) & 1) == 1) {
+                            if (privilege == 0 || (privilege == 1 && ((get_csr(CSR_MSTATUS) >> 22) & 1) == 1)) {
                                 take_trap(CAUSE_ILLEGALI, inst_reg);
                                 break;
                             }
@@ -662,23 +682,7 @@ void CPU::tick() {
                     set_reg(rd(), temp);
                     break;
                 default:
-                    if (funct7() == 0x09) {
-                        // SFENCE.VMA
-                        if (privilege > 0) {
-                            if (privilege == 1 && ((get_csr(CSR_MSTATUS) >> 20) & 1)) {
-                                take_trap(CAUSE_ILLEGALI, inst_reg);
-                                break; 
-                            } else {
-                                flush_tlb();
-                                break;
-                            }
-                        } else {
-                            take_trap(CAUSE_ILLEGALI, inst_reg);
-                            break;
-                        }
-                    } else {
-                        take_trap(CAUSE_ILLEGALI, inst_reg);
-                    }
+                    take_trap(CAUSE_ILLEGALI, inst_reg);
             }
             break;
         case ATOMIC:
@@ -820,4 +824,13 @@ void CPU::tick() {
             take_trap(CAUSE_ILLEGALI, inst_reg);
     }
     minstret++;
-};
+}
+
+void CPU::dump_state() {
+    printf("PC: %08x | INST: %08x | MODE: %d\n", pc, inst_reg, privilege);
+    // Print first 8 registers for brevity
+    for(int i=0; i<8; i++) {
+        printf("x%d: %08x ", i, reg_file[i]);
+    }
+    printf("\n");
+}
