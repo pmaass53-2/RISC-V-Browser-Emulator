@@ -11,7 +11,7 @@ EXPORTS='["_load_rom", "_main", "_malloc", "_free"]'
 em++ -O3 \
     -std=c++20 \
     -s EXPORTED_FUNCTIONS="$EXPORTS" \
-    -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
+    -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","HEAPU8"]' \
     -s ALLOW_MEMORY_GROWTH=1 \
     -msimd128 \
     -s ENVIRONMENT=web \

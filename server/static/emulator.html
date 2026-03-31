@@ -43,20 +43,23 @@
         </style>
     </head>
     <body>
+        <div id="config-box">
+            <input id="fileSelect" type="file">
+        </div>
         <div id="terminal" tabindex="0"></div>
         <div id="status">Loading wasm...</div>
         <script>
             // HTML elements
-            const rom = document.getElementById("rom")
-            const terminal = document.getElementById('terminal')
-            const status = document.getElementById('status')
-            // terminalinal buffer
+            const fileSelect = document.getElementById("fileSelect")
+            const terminal = document.getElementById("terminal")
+            const status = document.getElementById("status")
+            fileSelect.disabled = true;
+            // terminal buffer
             let content = ''
 
             // Called from C++ via EM_ASM when the UART transmits a byte
             function js_uart_write(byte) {
                 const ch = String.fromCharCode(byte);
-                if (ch === '\r') return
                 content += ch
                 terminal.textContent = content
                 terminal.scrollTop = terminal.scrollHeight
@@ -83,27 +86,33 @@
                 }
             })
             terminal.addEventListener('click', () => terminal.focus())
-            
+
+            fileSelect.addEventListener("change", (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                console.log("File selected: " + file.name);
+                file.arrayBuffer().then(buffer => {
+                    console.log("Buffer loaded, size: " + buffer.byteLength);
+                    status.textContent = "Copying Program..."
+                    const bbuff = new Uint8Array(buffer)
+                    const ptr = Module._malloc(bbuff.length)
+                    Module.HEAPU8.set(bbuff, ptr)
+                    status.textContent = "Loading ROM..."
+                    Module._load_rom(ptr, bbuff.length)
+                    Module._free(ptr)
+                    console.log(`Sent ${bbuff.length} bytes to WASM`)
+                }).catch(err => {
+                    alert("Error reading file: " + err.message);
+                    console.error(err);
+                });
+            });
             // emscripten module
             var Module = {
                 onRuntimeInitialized: function () {
                     // update status
-                    status.textContent = 'Wasm loaded - running';
-                    // boot the emulator
+                    status.textContent = "Wasm loaded"
                     terminal.focus()
-
-                    // load binary
-                    const rawData = JSON.parse(sessionStorage.getItem("binaryFileData"))
-                    if (rawData) {
-                        const bbuff = new Uint8Array(rawData.data)
-                        const ptr = Module._malloc(bbuff.length)
-                        HEAPU8.set(bbuff, ptr)
-                        Module._load_rom(ptr, bbuff.length)
-                        Module._free(ptr)
-                        console.log(`Sent ${bbuff.length} bytes to WASM`)
-                    } else {
-                        alert("missing binary data")
-                    }
+                    fileSelect.disabled = false
                 }
             };
         </script>

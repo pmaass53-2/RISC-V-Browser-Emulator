@@ -11,7 +11,7 @@
 
 CLINT clint;
 PLIC plic;
-UART uart;
+UART uart(&plic);
 RAM ram;
 Bus bus(&clint, &plic, &uart, &ram);
 CPU cpu(&bus, 0x80000000);
@@ -35,6 +35,7 @@ extern "C" {
     void load_rom(uint8_t* buffer, int size) {
         // Load the bytes into RAM
         bus.ram->load(buffer, size);
+        cpu.reset(0x80000000);
         is_running = true;
         printf("ROM loaded successfully. Starting CPU...\n");
     }
