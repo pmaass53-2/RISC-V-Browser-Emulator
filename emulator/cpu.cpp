@@ -19,6 +19,10 @@ uint32_t CPU::check_access(uint32_t virt, uint32_t pte, uint32_t access_type) {
         page_fault(virt, access_type);
         return 0;
     }
+    if (privilege == 1 && u == 1 && access_type == 2) { // 2 is ACCESS_FETCH
+        take_trap(CAUSE_PAGE_FAULT_INST, virt);
+        return 0;
+    }
     if (access_type == 0 && r == 0) {
         take_trap(CAUSE_PAGE_FAULT_LOAD, virt);
         return 0;
@@ -75,8 +79,12 @@ CPU::Translation CPU::translate(uint32_t virt, uint32_t access_type) {
                 if (check_access(virt, pte1, access_type) == 0) {
                     return {0, 0};
                 } else {
-                    uint32_t physical_addr = ((pte1_ppn << 12) | (vpn0 << 12)) | offset;
-                    return {physical_addr, pte1};
+                    uint32_t new_pte = pte1 | 0x40; // Set A bit
+                    if (access_type == 1) new_pte |= 0x80; // Set D bit if writing
+                    if (new_pte != pte1) bus->write<uint32_t>(pte1_address, new_pte);
+                    uint32_t pte1_ppn_updated = (new_pte >> 10) & 0x3FFFFF;
+                    uint32_t physical_addr = ((pte1_ppn_updated << 12) | (vpn0 << 12)) | offset;
+                    return {physical_addr, new_pte};
                 }
             }
         }
@@ -92,7 +100,7 @@ T CPU::read_memory(uint32_t virt, uint32_t access_type) {
         return 0;
     }
     uint32_t effective_privilege = privilege;
-    if ((csr_file[CSR_MSTATUS] >> 17) & 1) {
+    if (access_type != ACCESS_FETCH && ((csr_file[CSR_MSTATUS] >> 17) & 1)) {
         effective_privilege = (csr_file[CSR_MSTATUS] >> 11) & 3;
     }
     if (effective_privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
@@ -146,14 +154,14 @@ void CPU::write_memory(uint32_t virt, T val) {
         uint32_t tlb_index = full_vpn & 0xFF;
         uint32_t physical_addr = 0;
         if (tlb[tlb_index].valid && tlb[tlb_index].vpn == full_vpn) {
-            if (check_access(virt, tlb[tlb_index].permissions, access_type) == 1) {
+            if (check_access(virt, tlb[tlb_index].permissions, ACCESS_WRITE) == 1) {
                 uint32_t offset = virt & 0xFFF;
                 physical_addr = (tlb[tlb_index].ppn << 12) | offset;
             } else {
                 return;
             }
         } else {
-            Translation result = translate(virt, access_type);
+            Translation result = translate(virt, ACCESS_WRITE);
             // update physical_addr for bus->ram.read()
             physical_addr = result.physical_addr;
             if (!trap_pending) {
@@ -167,12 +175,27 @@ void CPU::write_memory(uint32_t virt, T val) {
         }
     }
 }
+void CPU::reset(uint32_t start) {
+    next_pc = start;
+    for (uint32_t i = 0; i < 32; i++) {
+        reg_file[i] = 0;
+    }
+    for (uint32_t i = 0; i < 4096; i++) {
+        csr_file[i] = 0;
+    }
+    csr_file[CSR_MHARTID] = 0;
+    csr_file[CSR_MISA] = 0x40141101;
+    privilege = 3;
+    mcycle = 0;
+    minstret = 0;
+    flush_tlb();
+}
 void CPU::tick() {
     trap_pending = false;
     // increment instructions executed
     mcycle++;
     // update MSIP (software interrupt pending) and MTIP (timer interrupt pending) from CLINT
-    csr_file[CSR_MIP] = (csr_file[CSR_MIP] & ~0x88) | (bus->clint->MTIP << 7) | (bus->clint->MSIP << 3);
+    csr_file[CSR_MIP] = (csr_file[CSR_MIP] & ~0xA88) | (bus->plic->MEIP << 11) | (bus->plic->SEIP << 9) | (bus->clint->MTIP << 7) | (bus->clint->MSIP << 3);
     // handle traps and interrupts
     uint32_t mstatus = csr_file[CSR_MSTATUS];
     uint32_t mideleg = csr_file[CSR_MIDELEG];
@@ -560,7 +583,7 @@ void CPU::tick() {
                             break;
                         case 0x102:
                             // SRET
-                            if (privilege == 0) {
+                            if (privilege == 0 || privilege == 1 && ((get_csr(CSR_MSTATUS) >> 22) & 1) == 1) {
                                 take_trap(CAUSE_ILLEGALI, inst_reg);
                                 break;
                             }
@@ -584,6 +607,8 @@ void CPU::tick() {
                             set_csr(CSR_MSTATUS, (get_csr(CSR_MSTATUS) & ~(1U << 3)) | (((get_csr(CSR_MSTATUS) >> 7) & 1U) << 3));
                             set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) | (1U << 7));
                             set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) & ~(3U << 11));
+                            // clear mstatus.MPRV
+                            set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) & ~(1U << 17));
                             break;
                         default:
                             take_trap(CAUSE_ILLEGALI, inst_reg);
@@ -689,7 +714,11 @@ void CPU::tick() {
                     // LR.W
                     temp = reg_file[rs1()];
                     set_reg(rd(), read_memory<uint32_t>(temp, ACCESS_READ));
-                    reservation_addr = temp;
+                    reservation_addr = translate(temp, ACCESS_READ).physical_addr;
+                    if (trap_pending) {
+                        // translate failed
+                        return;
+                    }
                     reservation_valid = true;
                     break;
                 case 0x03:

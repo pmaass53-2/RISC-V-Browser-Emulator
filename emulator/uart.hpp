@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <emscripten.h>
 
+#include "plic.hpp"
+
 class UART {
     public:
         static constexpr uint32_t IER = 0x1; // R/W (DLAB=0)
@@ -22,8 +24,11 @@ class UART {
 
         uint8_t regs[12] = {0};
 
-        UART() {
+        PLIC *plic;
+
+        UART(PLIC *plic) : plic(plic) {
             regs[LSR] = 0x60;
+            regs[IIR] = 0x01;
         }
         void write_reg(uint32_t offset, uint32_t value) {
             uint32_t reg = offset & 0x7;
@@ -54,6 +59,7 @@ class UART {
                     return regs[DLL];
                 } else {
                     regs[LSR] &= ~0x01;
+                    regs[IIR] = 0x01;
                     return regs[RBR];
                 }
             } else if (reg == 1 && dlab) {
@@ -64,7 +70,11 @@ class UART {
         void rx_push(uint8_t c) {
             regs[RBR] = c;
             regs[LSR] |= 0x01;
-            // trigger PLIC interrupt once PLIC is implemented
+            regs[IIR] = 0x04;
+            // trigger PLIC
+            if (regs[IER] & 0x01) {
+                plic->set_pending(PLIC::ID_UART);
+            }
         }
 };
 #endif

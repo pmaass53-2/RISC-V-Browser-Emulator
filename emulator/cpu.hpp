@@ -95,6 +95,7 @@ class CPU {
         uint64_t mcycle = 0;
         uint64_t minstret = 0;
         CPU(Bus *busptr, uint32_t ram_start);
+        void reset(uint32_t start);
         void tick();
         uint32_t check_access(uint32_t virt, uint32_t pte, uint32_t access_type);
         Translation translate(uint32_t virt, uint32_t access_type);
