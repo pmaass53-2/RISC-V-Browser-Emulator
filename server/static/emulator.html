@@ -44,31 +44,44 @@
     </head>
     <body>
         <div id="config-box">
+            <h3>Choose Program</h3>
             <input id="fileSelect" type="file">
+            <h3>Choose DTB file</h3>
+            <input id="dtbSelect" type="file">
+            <br>
+            <button id="run">Run</button>
         </div>
         <div id="terminal" tabindex="0"></div>
         <div id="status">Loading wasm...</div>
         <script>
             // HTML elements
             const fileSelect = document.getElementById("fileSelect")
+            const dtbSelect = document.getElementById("dtbSelect")
+            const runBtn = document.getElementById("run")
             const terminal = document.getElementById("terminal")
             const status = document.getElementById("status")
             fileSelect.disabled = true;
+            dtbSelect.disabled = true;
+            runBtn.disabled = true;
+
             // terminal buffer
             let content = ''
+            let romBuffer = null;
+            let dtbBuffer = null;
 
             // Called from C++ via EM_ASM when the UART transmits a byte
             function js_uart_write(byte) {
+                alert("UART_WRITE")
                 const ch = String.fromCharCode(byte);
                 content += ch
                 terminal.textContent = content
                 terminal.scrollTop = terminal.scrollHeight
             }
+
             // handle input
             terminal.addEventListener('keydown', e => {
                 e.preventDefault()
                 if (!Module._uart_push_byte) return
-                // handle special characters
                 if (e.key.length === 1) {
                     Module._uart_push_byte(e.key.charCodeAt(0))
                 } else if (e.key === 'Enter') {
@@ -76,45 +89,65 @@
                 } else if (e.key === 'Backspace') {
                     Module._uart_push_byte(127)
                 } else if (e.key === 'ArrowUp') {
-                    Module._uart_push_byte(27)
-                    Module._uart_push_byte(91)
-                    Module._uart_push_byte(65)
+                    Module._uart_push_byte(27); Module._uart_push_byte(91); Module._uart_push_byte(65)
                 } else if (e.key === 'ArrowDown') {
-                    Module._uart_push_byte(27)
-                    Module._uart_push_byte(91)
-                    Module._uart_push_byte(66)
+                    Module._uart_push_byte(27); Module._uart_push_byte(91); Module._uart_push_byte(66)
                 }
             })
             terminal.addEventListener('click', () => terminal.focus())
 
-            fileSelect.addEventListener("change", (e) => {
+            // just store the file when selected, don't load yet
+            fileSelect.addEventListener("change", e => {
                 const file = e.target.files[0];
                 if (!file) return;
-                console.log("File selected: " + file.name);
-                file.arrayBuffer().then(buffer => {
-                    // debug
-                    Module._set_debug(true);
-                    console.log("Buffer loaded, size: " + buffer.byteLength);
-                    status.textContent = "Copying Program..."
-                    const bbuff = new Uint8Array(buffer)
-                    const ptr = Module._malloc(bbuff.length)
-                    Module.HEAPU8.set(bbuff, ptr)
-                    status.textContent = "Loading ROM..."
-                    Module._load_rom(ptr, bbuff.length)
-                    Module._free(ptr)
-                    console.log(`Sent ${bbuff.length} bytes to WASM`)
-                }).catch(err => {
-                    alert("Error reading file: " + err.message);
-                    console.error(err);
+                file.arrayBuffer().then(buf => {
+                    romBuffer = new Uint8Array(buf);
+                    status.textContent = "ROM ready (" + romBuffer.length + " bytes)"
+                    updateRunButton();
                 });
             });
-            // emscripten module
+
+            dtbSelect.addEventListener("change", e => {
+                const file = e.target.files[0];
+                if (!file) return;
+                file.arrayBuffer().then(buf => {
+                    dtbBuffer = new Uint8Array(buf);
+                    status.textContent = "DTB ready (" + dtbBuffer.length + " bytes)"
+                    updateRunButton();
+                });
+            });
+
+            // only enable run when both files are loaded
+            function updateRunButton() {
+                runBtn.disabled = !(romBuffer && dtbBuffer);
+            }
+
+            runBtn.addEventListener("click", () => {
+                if (!romBuffer || !dtbBuffer) return;
+                Module._set_debug(true)
+
+                status.textContent = "Loading ROM..."
+                const romPtr = Module._malloc(romBuffer.length)
+                Module.HEAPU8.set(romBuffer, romPtr)
+                Module._load_rom(romPtr, romBuffer.length)
+                Module._free(romPtr)
+
+                status.textContent = "Loading DTB..."
+                const dtbPtr = Module._malloc(dtbBuffer.length)
+                Module.HEAPU8.set(dtbBuffer, dtbPtr)
+                Module._load_dtb(dtbPtr, dtbBuffer.length)
+                Module._free(dtbPtr)
+
+                status.textContent = "Running — " + romBuffer.length + " byte ROM, " + dtbBuffer.length + " byte DTB"
+                terminal.focus()
+            });
+
             var Module = {
                 onRuntimeInitialized: function () {
-                    // update status
-                    status.textContent = "Wasm loaded"
+                    status.textContent = "Wasm loaded — select ROM and DTB to continue"
                     terminal.focus()
                     fileSelect.disabled = false
+                    dtbSelect.disabled = false
                 }
             };
         </script>

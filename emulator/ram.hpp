@@ -8,15 +8,15 @@
 
 class RAM {
     // 16-byte alignment for SIMD
-    alignas(16) uint8_t data[MEMORY_SIZE];
+    uint8_t *data;
 
     public:
-        RAM() {
-            std::memset(data, 0, MEMORY_SIZE);
-        }
-        inline void load(const uint8_t *value, uint32_t size) noexcept {
-            if (size > MEMORY_SIZE) size = MEMORY_SIZE;
-            std::memcpy(data, value, size);
+        RAM() : data(new uint8_t[MEMORY_SIZE]()) {}
+        ~RAM() { delete[] data; }
+        inline void load(const uint8_t *value, uint32_t size, uint32_t offset = 0) noexcept {
+            if (offset >= MEMORY_SIZE) return;
+            if (offset + size > MEMORY_SIZE) size = MEMORY_SIZE - offset;
+            std::memcpy(data + offset, value, size);
         }
         template <typename T>
         inline T read(uint32_t offset) const noexcept {

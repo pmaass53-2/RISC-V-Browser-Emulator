@@ -78,6 +78,7 @@ CPU::Translation CPU::translate(uint32_t virt, uint32_t access_type) {
                 return {0, 0};
             } else {
                 if (check_access(virt, pte1, access_type) == 0) {
+                    page_fault(virt, access_type);
                     return {0, 0};
                 } else {
                     uint32_t new_pte = pte1 | 0x40; // Set A bit
@@ -97,11 +98,17 @@ CPU::Translation CPU::translate(uint32_t virt, uint32_t access_type) {
 template <typename T>
 T CPU::read_memory(uint32_t virt, uint32_t access_type) {
     if ((virt & (sizeof(T) - 1)) != 0) {
-        take_trap(CAUSE_LOAD_ALIGN, virt);
-        return 0;
+        T result = 0;
+        for (size_t i = 0; i < sizeof(T); i++) {
+            T byte_val = read_memory<uint8_t>(virt + i, access_type);
+            // If a page boundary crossing caused a fault, abort immediately
+            if (trap_pending) return 0; 
+            result |= (byte_val << (i * 8));
+        }
+        return result;
     }
     uint32_t effective_privilege = privilege;
-    if (access_type != ACCESS_FETCH && ((csr_file[CSR_MSTATUS] >> 17) & 1)) {
+    if (privilege == 3 && access_type != ACCESS_FETCH && ((csr_file[CSR_MSTATUS] >> 17) & 1)) {
         effective_privilege = (csr_file[CSR_MSTATUS] >> 11) & 3;
     }
     if (effective_privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
@@ -138,12 +145,17 @@ T CPU::read_memory(uint32_t virt, uint32_t access_type) {
 template <typename T>
 void CPU::write_memory(uint32_t virt, T val) {
     if ((virt & (sizeof(T) - 1)) != 0) {
-        take_trap(CAUSE_STORE_ALIGN, virt);
+        for (size_t i = 0; i < sizeof(T); i++) {
+            uint8_t byte_val = (val >> (i * 8)) & 0xFF;
+            write_memory<uint8_t>(virt + i, byte_val);
+            // If a page boundary crossing caused a fault, abort immediately
+            if (trap_pending) return;
+        }
         return;
     }
     reservation_valid = false;
     uint32_t effective_privilege = privilege;
-    if ((csr_file[CSR_MSTATUS] >> 17) & 1) {
+    if (privilege == 3 && (csr_file[CSR_MSTATUS] >> 17) & 1) {
         effective_privilege = (csr_file[CSR_MSTATUS] >> 11) & 3;
     }
     if (effective_privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
@@ -829,7 +841,7 @@ void CPU::tick() {
 void CPU::dump_state() {
     printf("PC: %08x | INST: %08x | MODE: %d\n", pc, inst_reg, privilege);
     // Print first 8 registers for brevity
-    for(int i=0; i<8; i++) {
+    for(int i = 0; i < 32; i++) {
         printf("x%d: %08x ", i, reg_file[i]);
     }
     printf("\n");
