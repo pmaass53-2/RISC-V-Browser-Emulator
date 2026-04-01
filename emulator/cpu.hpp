@@ -37,15 +37,28 @@ class CPU {
         static constexpr uint32_t CSR_MIDELEG = 0x303;
         static constexpr uint32_t CSR_MIE = 0x304;
         static constexpr uint32_t CSR_MTVEC = 0x305;
+        static constexpr uint32_t CSR_MCOUNTEREN = 0x306;
+        static constexpr uint32_t CSR_MENVCFG = 0x30A;
+        static constexpr uint32_t CSR_MSTATUSH = 0x310;
+        static constexpr uint32_t CSR_MCOUNTINHIBIT = 0x320;
         static constexpr uint32_t CSR_MSCRATCH = 0x340;
         static constexpr uint32_t CSR_MEPC = 0x341;
         static constexpr uint32_t CSR_MCAUSE = 0x342;
         static constexpr uint32_t CSR_MTVAL = 0x343;
         static constexpr uint32_t CSR_MIP = 0x344;
+        static constexpr uint32_t CSR_PMPCFG = 0x3A0;
+        static constexpr uint32_t CSR_TSELECT = 0x7A0;
         static constexpr uint32_t CSR_MCYCLE = 0xB00;
         static constexpr uint32_t CSR_MINSTRET = 0xB02;
+        static constexpr uint32_t CSR_MHPMCOUNTER3 = 0xB03;
+        static constexpr uint32_t CSR_MHPMCOUNTER31 = 0xB1F;
         static constexpr uint32_t CSR_MCYCLEH = 0xB80;
+        static constexpr uint32_t CSR_MHPMCOUNTER3H = 0xB83;
         static constexpr uint32_t CSR_MINSTRETH = 0xB82;
+        static constexpr uint32_t CSR_CYCLE = 0xC00;
+        static constexpr uint32_t CSR_TIME = 0xC01;
+        static constexpr uint32_t CSR_INSTRET = 0xC02;
+        static constexpr uint32_t CSR_FB0 = 0xFB0;
         // read only CSRs
         static constexpr uint32_t CSR_MVENDORID = 0xF11;
         static constexpr uint32_t CSR_MARCHID = 0xF12;
@@ -144,6 +157,9 @@ class CPU {
                     case CSR_MSTATUS:
                         return csr_file[CSR_MSTATUS];
                         break;
+                    case CSR_MSTATUSH:
+                        return 0;
+                        break;
                     case CSR_MISA:
                         return csr_file[CSR_MISA];
                         break;
@@ -223,8 +239,23 @@ class CPU {
                         // 31:30 OPST (status), 29:16 Reserved (zero), 15:0 entropy
                         return (2 << 30) | (rand() & 0xFFFF);
                         break;
+                    case CSR_PMPCFG:
+                    case CSR_MHPMCOUNTER3:
+                    case CSR_MHPMCOUNTER3H:
+                    case CSR_MHPMCOUNTER31:
+                    case CSR_MCOUNTEREN:
+                    case CSR_MENVCFG:
+                    case CSR_MCOUNTINHIBIT:
+                    case CSR_FB0:
+                    case CSR_TSELECT:
+                    case CSR_CYCLE:
+                    case CSR_TIME:
+                    case CSR_INSTRET:
+                        return 0;
+                        break;
                     default:
-                        take_trap(CAUSE_ILLEGALI, inst_reg);
+                        // printf("Illegal CSR: %u", csr);
+                        // take_trap(CAUSE_ILLEGALI, inst_reg);
                         return 0;
                 }
             }
@@ -241,6 +272,8 @@ class CPU {
                     switch (csr) {
                         case CSR_MSTATUS:
                             csr_file[CSR_MSTATUS] = val;
+                            break;
+                        case CSR_MSTATUSH:
                             break;
                         case CSR_MEDELEG:
                             csr_file[CSR_MEDELEG] = val;
@@ -300,8 +333,23 @@ class CPU {
                         case CSR_SEED:
                             // nothing for now
                             break;
+                        case CSR_PMPCFG:
+                        case CSR_MHPMCOUNTER3:
+                        case CSR_MHPMCOUNTER3H:
+                        case CSR_MHPMCOUNTER31:
+                        case CSR_MCOUNTEREN:
+                        case CSR_MENVCFG:
+                        case CSR_MCOUNTINHIBIT:
+                        case CSR_FB0:
+                        case CSR_TSELECT:
+                        case CSR_CYCLE:
+                        case CSR_TIME:
+                        case CSR_INSTRET:
+                            break;
                         default:
-                            take_trap(CAUSE_ILLEGALI, inst_reg);
+                            break;
+                            // printf("Illegal CSR: %u", csr);
+                            // take_trap(CAUSE_ILLEGALI, inst_reg);
                     }
                 }
             }
@@ -356,12 +404,13 @@ class CPU {
             if (delegate) {
                 // handle in S-Mode
                 csr_file[CSR_SEPC] = pc;
-                // just write to M-mode registers for simplicity
                 csr_file[CSR_SCAUSE] = cause;
                 csr_file[CSR_STVAL] = tval;
-                csr_file[CSR_MSTATUS] = (csr_file[CSR_MSTATUS] & ~(1U << 8)) | (privilege & 1U) << 8;
-                csr_file[CSR_MSTATUS] = (csr_file[CSR_MSTATUS] & ~(1U << 5)) | (((csr_file[CSR_MSTATUS] >> 1) & 1U) << 5);
-                csr_file[CSR_MSTATUS] &= ~(1U << 1);
+                // mstatus[SPIE] = mstatus[SIE]; mstatus[SIE] = 0; mstatus[SPP] = privilege;
+                uint32_t sie = (csr_file[CSR_MSTATUS] >> 1) & 1;
+                csr_file[CSR_MSTATUS] = (csr_file[CSR_MSTATUS] & ~(1U << 5)) | (sie << 5); // SPIE
+                csr_file[CSR_MSTATUS] &= ~(1U << 1); // SIE = 0
+                csr_file[CSR_MSTATUS] = (csr_file[CSR_MSTATUS] & ~(1U << 8)) | ((privilege & 1) << 8); // SPP
                 privilege = 1;
                 if ((cause & 0x80000000) && ((csr_file[CSR_STVEC] & 3) == 1)) {
                     next_pc = (csr_file[CSR_STVEC] & ~3) + (4 * exception_code);
@@ -372,12 +421,13 @@ class CPU {
             } else {
                 // handle in M-Mode
                 csr_file[CSR_MEPC] = pc;
-                // write to csr_file directly for performance
                 csr_file[CSR_MCAUSE] = cause;
                 csr_file[CSR_MTVAL] = tval;
-                csr_file[CSR_MSTATUS] = (csr_file[CSR_MSTATUS] & ~(3U << 11)) | (privilege & 3U) << 11;
-                csr_file[CSR_MSTATUS] = (csr_file[CSR_MSTATUS] & ~(1U << 7)) | (((csr_file[CSR_MSTATUS] >> 3) & 1U) << 7);
-                csr_file[CSR_MSTATUS] &= ~(1U << 3);
+                // mstatus[MPIE] = mstatus[MIE]; mstatus[MIE] = 0; mstatus[MPP] = privilege;
+                uint32_t mie = (csr_file[CSR_MSTATUS] >> 3) & 1;
+                csr_file[CSR_MSTATUS] = (csr_file[CSR_MSTATUS] & ~(1U << 7)) | (mie << 7); // MPIE
+                csr_file[CSR_MSTATUS] &= ~(1U << 3); // MIE = 0
+                csr_file[CSR_MSTATUS] = (csr_file[CSR_MSTATUS] & ~(3U << 11)) | ((privilege & 3) << 11); // MPP
                 privilege = 3;
                 if ((cause & 0x80000000) && ((csr_file[CSR_MTVEC] & 3) == 1)) {
                     next_pc = (csr_file[CSR_MTVEC] & ~3) + (4 * exception_code);

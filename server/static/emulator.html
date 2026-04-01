@@ -71,7 +71,6 @@
 
             // Called from C++ via EM_ASM when the UART transmits a byte
             function js_uart_write(byte) {
-                alert("UART_WRITE")
                 const ch = String.fromCharCode(byte);
                 content += ch
                 terminal.textContent = content
@@ -124,7 +123,7 @@
 
             runBtn.addEventListener("click", () => {
                 if (!romBuffer || !dtbBuffer) return;
-                Module._set_debug(true)
+                // Module._set_debug(true)
 
                 status.textContent = "Loading ROM..."
                 const romPtr = Module._malloc(romBuffer.length)

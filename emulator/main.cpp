@@ -57,6 +57,10 @@ extern "C" {
         cpu.debug_mode = enable;
         printf("Debug mode %s\n", enable ? "enabled" : "disabled");
     }
+    EMSCRIPTEN_KEEPALIVE
+    void log_instruction() {
+        cpu.dump_state();
+    }
 }
 
 int main() {

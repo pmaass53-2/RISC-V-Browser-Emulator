@@ -594,13 +594,13 @@ void CPU::tick() {
                             // ECALL
                             switch (privilege) {
                                 case 3:
-                                    take_trap(CAUSE_ECALL_M);
+                                    take_trap(CAUSE_ECALL_M, inst_reg);
                                     break;
                                 case 1:
-                                    take_trap(CAUSE_ECALL_S);
+                                    take_trap(CAUSE_ECALL_S, inst_reg);
                                     break;
                                 case 0:
-                                    take_trap(CAUSE_ECALL_U);
+                                    take_trap(CAUSE_ECALL_U, inst_reg);
                                     break;
                                 default:
                                     take_trap(CAUSE_ILLEGALI, inst_reg);
@@ -608,24 +608,23 @@ void CPU::tick() {
                             break;
                         case 0x001:
                             // EBREAK
-                            take_trap(CAUSE_EBREAK);
+                            take_trap(CAUSE_EBREAK, inst_reg);
                             break;
                         case 0x105:
                             // WFI (Wait For Interrupt) - Implement as NOP
                             break;
                         case 0x102:
                             // SRET
-                            if (privilege == 0 || (privilege == 1 && ((get_csr(CSR_MSTATUS) >> 22) & 1) == 1)) {
+                            if (privilege == 0 || (privilege == 1 && ((csr_file[CSR_MSTATUS] >> 22) & 1) == 1)) {
                                 take_trap(CAUSE_ILLEGALI, inst_reg);
                                 break;
                             }
-                            next_pc = get_csr(CSR_SEPC);
-                            privilege = (get_csr(CSR_MSTATUS) >> 8) & 1;
-                            // clear SPP after reading
-                            set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) & ~(1U << 8));
-                            // copy SPIE to SIE
-                            set_csr(CSR_MSTATUS, (get_csr(CSR_MSTATUS) & ~(1U << 1)) | (((get_csr(CSR_MSTATUS) >> 5) & 1U) << 1));
-                            set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) | (1U << 5));
+                            next_pc = csr_file[CSR_SEPC];
+                            privilege = (csr_file[CSR_MSTATUS] >> 8) & 1;
+                            // mstatus.SIE = mstatus.SPIE; mstatus.SPIE = 1; mstatus.SPP = 0
+                            csr_file[CSR_MSTATUS] = (csr_file[CSR_MSTATUS] & ~(1U << 1)) | (((csr_file[CSR_MSTATUS] >> 5) & 1U) << 1);
+                            csr_file[CSR_MSTATUS] |= (1U << 5);
+                            csr_file[CSR_MSTATUS] &= ~(1U << 8);
                             break;
                         case 0x302:
                             // MRET
@@ -633,14 +632,16 @@ void CPU::tick() {
                                 take_trap(CAUSE_ILLEGALI, inst_reg);
                                 break;
                             }
-                            next_pc = get_csr(CSR_MEPC);
-                            privilege = (get_csr(CSR_MSTATUS) >> 11) & 3;
-                            // copy MPIE to MIE
-                            set_csr(CSR_MSTATUS, (get_csr(CSR_MSTATUS) & ~(1U << 3)) | (((get_csr(CSR_MSTATUS) >> 7) & 1U) << 3));
-                            set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) | (1U << 7));
-                            set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) & ~(3U << 11));
-                            // clear mstatus.MPRV
-                            set_csr(CSR_MSTATUS, get_csr(CSR_MSTATUS) & ~(1U << 17));
+                            next_pc = csr_file[CSR_MEPC];
+                            privilege = (csr_file[CSR_MSTATUS] >> 11) & 3;
+                            // mstatus.MIE = mstatus.MPIE; mstatus.MPIE = 1; mstatus.MPP = 0
+                            csr_file[CSR_MSTATUS] = (csr_file[CSR_MSTATUS] & ~(1U << 3)) | (((csr_file[CSR_MSTATUS] >> 7) & 1U) << 3);
+                            csr_file[CSR_MSTATUS] |= (1U << 7);
+                            csr_file[CSR_MSTATUS] &= ~(3U << 11);
+                            // mstatus.MPRV is cleared if returning to less than M-mode
+                            if (privilege < 3) {
+                                csr_file[CSR_MSTATUS] &= ~(1U << 17);
+                            }
                             break;
                         default:
                             take_trap(CAUSE_ILLEGALI, inst_reg);
