@@ -22,7 +22,7 @@ void main_loop() {
     if (!is_running) return;
     // Run a batch of instructions per frame (e.g., 10,000) 
     // to keep the emulator fast while letting the browser breathe.
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < 2500; i++) {
         cpu.tick();
         if (cpu.mcycle % 10 == 0) {
             bus.clint->tick();
@@ -51,11 +51,22 @@ extern "C" {
     void uart_push_byte(uint8_t byte) {
         uart.rx_push(byte);
     }
-
     EMSCRIPTEN_KEEPALIVE
     void set_debug(bool enable) {
         cpu.debug_mode = enable;
         printf("Debug mode %s\n", enable ? "enabled" : "disabled");
+    }
+    EMSCRIPTEN_KEEPALIVE
+    uint32_t get_cycle() {
+        return cpu.mcycle;
+    }
+    EMSCRIPTEN_KEEPALIVE
+    uint32_t get_pc() {
+        return cpu.pc;
+    }
+    EMSCRIPTEN_KEEPALIVE
+    uint32_t get_instruction() {
+        return cpu.inst_reg;
     }
     EMSCRIPTEN_KEEPALIVE
     void log_instruction() {

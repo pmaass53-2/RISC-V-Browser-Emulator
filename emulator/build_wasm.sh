@@ -5,7 +5,7 @@ set -e
 SOURCES="main.cpp cpu.cpp"
 
 # all exported functions (extern "C" EMSCRIPTEN_KEEPALIVE)
-EXPORTS='["_load_rom", "_main", "_malloc", "_free", "_uart_push_byte", "_set_debug", "_load_dtb", "_log_instruction"]'
+EXPORTS='["_load_rom", "_main", "_malloc", "_free", "_uart_push_byte", "_set_debug", "_load_dtb", "_log_instruction", "_get_cycle", "_get_instruction", "_get_pc"]'
 
 # optimized build command
 em++ -O3 \

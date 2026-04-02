@@ -7,182 +7,175 @@
 
 CPU::CPU(Bus* busptr, uint32_t ram_start) : bus(busptr), next_pc(ram_start) {
 }
-uint32_t CPU::check_access(uint32_t virt, uint32_t pte, uint32_t access_type) {
+uint32_t CPU::check_access(uint32_t virt, uint32_t pte, uint32_t access_type, uint32_t eff_priv) {
     bool r = (pte >> 1) & 0x1;
     bool w = (pte >> 2) & 0x1;
     bool x = (pte >> 3) & 0x1;
     bool u = (pte >> 4) & 0x1;
-    if (privilege == 0 && u == 0) {
+    
+    // Support MXR (Make eXecutable Readable)
+    if (((csr_file[CSR_MSTATUS] >> 19) & 1) && x) r = 1;
+
+    if (eff_priv == 0 && u == 0) {
         page_fault(virt, access_type);
         return 0;
     }
-    if (!((csr_file[CSR_MSTATUS] & 0x40000) >> 18) && privilege == 1 && u == 1) {
+    if (!((csr_file[CSR_MSTATUS] >> 18) & 1) && eff_priv == 1 && u == 1) {
         page_fault(virt, access_type);
         return 0;
     }
-    if (privilege == 1 && u == 1 && access_type == 2) { // 2 is ACCESS_FETCH
+    if (eff_priv == 1 && u == 1 && access_type == 2) { 
         take_trap(CAUSE_PAGE_FAULT_INST, virt);
         return 0;
     }
-    if (access_type == 0 && r == 0) {
+    if (access_type == 0 && !r) {
         take_trap(CAUSE_PAGE_FAULT_LOAD, virt);
         return 0;
     }
-    if (access_type == 1 && w == 0) {
+    if (access_type == 1 && !w) {
         take_trap(CAUSE_PAGE_FAULT_STORE, virt);
         return 0;
     }
-    if (access_type == 2 && x == 0) {
+    if (access_type == 2 && !x) {
         take_trap(CAUSE_PAGE_FAULT_INST, virt);
         return 0;
     }
     return 1;
 }
-CPU::Translation CPU::translate(uint32_t virt, uint32_t access_type) {
-    // note: direct CSR access for performance
+
+CPU::Translation CPU::translate(uint32_t virt, uint32_t access_type, uint32_t eff_priv) {
     uint32_t offset = virt & 0xFFF;
     uint32_t vpn0 = (virt >> 12) & 0x3FF;
     uint32_t vpn1 = (virt >> 22) & 0x3FF;
     uint32_t pte1_address = ((csr_file[CSR_SATP] & 0x3FFFFF) * 4096) + (vpn1 * 4);
     uint32_t pte1 = bus->read<uint32_t>(pte1_address);
-    bool pte1_valid = pte1 & 0x1;
-    if (pte1_valid) {
-        // simplified form, extract RWX
-        if ((pte1 & 0xE) == 0) {
-            // pointer
-            uint32_t pte0_address = (((pte1 >> 10) & 0x3FFFFF) * 4096) + (vpn0 * 4);
-            uint32_t pte0 = bus->read<uint32_t>(pte0_address);
-            bool pte0_valid = pte0 & 0x1;
-            if (pte0_valid) {
-                if ((pte0 & 0xE) == 0) {
-                    page_fault(virt, access_type);
-                    return {0, 0};
-                } else {
-                    if (check_access(virt, pte0, access_type) == 0) {
-                        return {0, 0};
-                    } else {
-                        uint32_t ppn = (pte0 >> 10) & 0x3FFFFF;
-                        uint32_t physical_addr = (ppn << 12) | offset;
-                        return {physical_addr, pte0};
-                    }
-                }
-            } else {
-                page_fault(virt, access_type);
-                return {0, 0};
-            }
-        } else {
-            // superpage (4MB)
-            uint32_t pte1_ppn = (pte1 >> 10) & 0x3FFFFF;
-            if ((pte1_ppn & 0x3FF) != 0) {
-                page_fault(virt, access_type);
-                return {0, 0};
-            } else {
-                if (check_access(virt, pte1, access_type) == 0) {
-                    page_fault(virt, access_type);
-                    return {0, 0};
-                } else {
-                    uint32_t new_pte = pte1 | 0x40; // Set A bit
-                    if (access_type == 1) new_pte |= 0x80; // Set D bit if writing
-                    if (new_pte != pte1) bus->write<uint32_t>(pte1_address, new_pte);
-                    uint32_t pte1_ppn_updated = (new_pte >> 10) & 0x3FFFFF;
-                    uint32_t physical_addr = ((pte1_ppn_updated << 12) | (vpn0 << 12)) | offset;
-                    return {physical_addr, new_pte};
-                }
-            }
-        }
-    } else {
+    
+    if (!(pte1 & 0x1)) {
         page_fault(virt, access_type);
         return {0, 0};
     }
+
+    if ((pte1 & 0xE) == 0) { 
+        // 4KB Leaf Page
+        uint32_t pte0_address = (((pte1 >> 10) & 0x3FFFFF) * 4096) + (vpn0 * 4);
+        uint32_t pte0 = bus->read<uint32_t>(pte0_address);
+        
+        if (!(pte0 & 0x1) || (pte0 & 0xE) == 0) {
+            page_fault(virt, access_type);
+            return {0, 0};
+        }
+
+        if (check_access(virt, pte0, access_type, eff_priv) == 0) return {0, 0};
+
+        // Apply A/D bit updates to normal pages
+        uint32_t new_pte = pte0 | 0x40; 
+        if (access_type == 1) new_pte |= 0x80;
+        if (new_pte != pte0) bus->write<uint32_t>(pte0_address, new_pte);
+
+        uint32_t ppn = (new_pte >> 10) & 0x3FFFFF;
+        return {(ppn << 12) | offset, new_pte};
+        
+    } else { 
+        // 4MB Superpage
+        uint32_t pte1_ppn = (pte1 >> 10) & 0x3FFFFF;
+        if ((pte1_ppn & 0x3FF) != 0) {
+            page_fault(virt, access_type);
+            return {0, 0};
+        }
+        
+        if (check_access(virt, pte1, access_type, eff_priv) == 0) return {0, 0};
+
+        uint32_t new_pte = pte1 | 0x40;
+        if (access_type == 1) new_pte |= 0x80;
+        if (new_pte != pte1) bus->write<uint32_t>(pte1_address, new_pte);
+
+        uint32_t pte1_ppn_updated = (new_pte >> 10) & 0x3FFFFF;
+        return {((pte1_ppn_updated << 12) | (vpn0 << 12)) | offset, new_pte};
+    }
 }
+
 template <typename T>
 T CPU::read_memory(uint32_t virt, uint32_t access_type) {
     if ((virt & (sizeof(T) - 1)) != 0) {
         T result = 0;
         for (size_t i = 0; i < sizeof(T); i++) {
             T byte_val = read_memory<uint8_t>(virt + i, access_type);
-            // If a page boundary crossing caused a fault, abort immediately
             if (trap_pending) return 0; 
             result |= (byte_val << (i * 8));
         }
         return result;
     }
+    
     uint32_t effective_privilege = privilege;
     if (privilege == 3 && access_type != ACCESS_FETCH && ((csr_file[CSR_MSTATUS] >> 17) & 1)) {
         effective_privilege = (csr_file[CSR_MSTATUS] >> 11) & 3;
     }
+    
     if (effective_privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
         return bus->read<T>(virt);
     } else {
-        // TLB lookup
         uint32_t full_vpn = virt >> 12;
         uint32_t tlb_index = full_vpn & 0xFF;
         uint32_t physical_addr = 0;
+        
         if (tlb[tlb_index].valid && tlb[tlb_index].vpn == full_vpn) {
-            if (check_access(virt, tlb[tlb_index].permissions, access_type) == 1) {
-                uint32_t offset = virt & 0xFFF;
-                physical_addr = (tlb[tlb_index].ppn << 12) | offset;
+            if (check_access(virt, tlb[tlb_index].permissions, access_type, effective_privilege) == 1) {
+                physical_addr = (tlb[tlb_index].ppn << 12) | (virt & 0xFFF);
             } else {
                 return 0;
             }
         } else {
-            Translation result = translate(virt, access_type);
-            // update physical_addr for bus->ram.read()
+            Translation result = translate(virt, access_type, effective_privilege);
             physical_addr = result.physical_addr;
             if (!trap_pending) {
-                // update TLB
                 tlb[tlb_index] = TLB_Entry{full_vpn, physical_addr >> 12, result.permissions, 1};
             }
         }
-        // check if trapped
-        if (trap_pending) {
-            return 0;
-        } else {
-            return bus->read<T>(physical_addr);
-        }
+        
+        if (trap_pending) return 0;
+        return bus->read<T>(physical_addr);
     }
 }
+
 template <typename T>
 void CPU::write_memory(uint32_t virt, T val) {
     if ((virt & (sizeof(T) - 1)) != 0) {
         for (size_t i = 0; i < sizeof(T); i++) {
             uint8_t byte_val = (val >> (i * 8)) & 0xFF;
             write_memory<uint8_t>(virt + i, byte_val);
-            // If a page boundary crossing caused a fault, abort immediately
             if (trap_pending) return;
         }
         return;
     }
+    
     reservation_valid = false;
     uint32_t effective_privilege = privilege;
-    if (privilege == 3 && (csr_file[CSR_MSTATUS] >> 17) & 1) {
+    if (privilege == 3 && ((csr_file[CSR_MSTATUS] >> 17) & 1)) {
         effective_privilege = (csr_file[CSR_MSTATUS] >> 11) & 3;
     }
+    
     if (effective_privilege == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
         bus->write<T>(virt, val);
         return;
     } else {
-        // TLB lookup
         uint32_t full_vpn = virt >> 12;
         uint32_t tlb_index = full_vpn & 0xFF;
         uint32_t physical_addr = 0;
+        
         if (tlb[tlb_index].valid && tlb[tlb_index].vpn == full_vpn) {
-            if (check_access(virt, tlb[tlb_index].permissions, ACCESS_WRITE) == 1) {
-                uint32_t offset = virt & 0xFFF;
-                physical_addr = (tlb[tlb_index].ppn << 12) | offset;
+            if (check_access(virt, tlb[tlb_index].permissions, ACCESS_WRITE, effective_privilege) == 1) {
+                physical_addr = (tlb[tlb_index].ppn << 12) | (virt & 0xFFF);
             } else {
                 return;
             }
         } else {
-            Translation result = translate(virt, ACCESS_WRITE);
-            // update physical_addr for bus->ram.read()
+            Translation result = translate(virt, ACCESS_WRITE, effective_privilege);
             physical_addr = result.physical_addr;
             if (!trap_pending) {
-                // update TLB
                 tlb[tlb_index] = TLB_Entry{full_vpn, physical_addr >> 12, result.permissions, 1};
             }
         }
-        // check if trapped
+        
         if (!trap_pending) {
             bus->write<T>(physical_addr, val);
         }
@@ -727,33 +720,61 @@ void CPU::tick() {
                         set_reg(rd(), temp);
                     }
                     break;
-                case 0x02:
+                case 0x02: {
                     // LR.W
                     temp = reg_file[rs1()];
-                    set_reg(rd(), read_memory<uint32_t>(temp, ACCESS_READ));
-                    reservation_addr = translate(temp, ACCESS_READ).physical_addr;
-                    if (trap_pending) {
-                        // translate failed
-                        return;
+                    uint32_t val = read_memory<uint32_t>(temp, ACCESS_READ);
+                    if (trap_pending) return; // Faulted during standard read
+                    
+                    set_reg(rd(), val);
+
+                    // Calculate effective privilege to see if MMU is bypassed
+                    uint32_t eff_priv_lr = privilege;
+                    if (privilege == 3 && ((csr_file[CSR_MSTATUS] >> 17) & 1)) {
+                        eff_priv_lr = (csr_file[CSR_MSTATUS] >> 11) & 3;
                     }
+
+                    // Determine reservation physical address
+                    if (eff_priv_lr == 3 || ((csr_file[CSR_SATP] & 0x80000000) == 0)) {
+                        reservation_addr = temp; // MMU Off: Physical == Virtual
+                    } else {
+                        reservation_addr = translate(temp, ACCESS_READ, eff_priv_lr).physical_addr;
+                        if (trap_pending) return;
+                    }
+                    
                     reservation_valid = true;
                     break;
-                case 0x03:
+                }
+                case 0x03: {
                     // SC.W
-                    if (reservation_valid && translate(reg_file[rs1()], ACCESS_WRITE).physical_addr == reservation_addr) {
-                        if (trap_pending) {
-                            // translate failed
-                            return;
-                        } else {
-                            write_memory<uint32_t>(reg_file[rs1()], reg_file[rs2()]);
+                    uint32_t vaddr = reg_file[rs1()];
+                    uint32_t phys_addr = vaddr;
+
+                    // Calculate effective privilege
+                    uint32_t eff_priv_sc = privilege;
+                    if (privilege == 3 && ((csr_file[CSR_MSTATUS] >> 17) & 1)) {
+                        eff_priv_sc = (csr_file[CSR_MSTATUS] >> 11) & 3;
+                    }
+
+                    // Determine physical address of the store conditional
+                    if (eff_priv_sc != 3 && ((csr_file[CSR_SATP] & 0x80000000) != 0)) {
+                        phys_addr = translate(vaddr, ACCESS_WRITE, eff_priv_sc).physical_addr;
+                        if (trap_pending) return;
+                    }
+
+                    // Check reservation
+                    if (reservation_valid && phys_addr == reservation_addr) {
+                        write_memory<uint32_t>(vaddr, reg_file[rs2()]);
+                        if (!trap_pending) {
                             reservation_addr = 0xFFFFFFFF;
-                            set_reg(rd(), 0);
+                            set_reg(rd(), 0); // Success
                         }
                     } else {
-                        set_reg(rd(), 1);
+                        set_reg(rd(), 1); // Failure
                     }
-                    reservation_valid = false;
+                    reservation_valid = false; // Always clear reservation on SC
                     break;
+                }
                 case 0x04:
                     // AMOXOR.W
                     reservation_valid = false;

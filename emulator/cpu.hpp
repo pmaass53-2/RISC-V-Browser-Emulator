@@ -115,8 +115,8 @@ class CPU {
         void reset(uint32_t start);
         void tick();
         void dump_state();
-        uint32_t check_access(uint32_t virt, uint32_t pte, uint32_t access_type);
-        Translation translate(uint32_t virt, uint32_t access_type);
+        uint32_t check_access(uint32_t virt, uint32_t pte, uint32_t access_type, uint32_t eff_priv);
+        Translation translate(uint32_t virt, uint32_t access_type, uint32_t eff_priv);
         template <typename T>
         T read_memory(uint32_t virt, uint32_t access_type);
         template <typename T>
@@ -395,10 +395,10 @@ class CPU {
             if (privilege <= 1) {
                 if ((cause & 0x80000000) != 0) {
                     // interrupt
-                    delegate = (get_csr(CSR_MIDELEG) >> exception_code) & 1;
+                    delegate = (csr_file[CSR_MIDELEG] >> exception_code) & 1;
                 } else {
                     // exception
-                    delegate = (get_csr(CSR_MEDELEG) >> exception_code) & 1;
+                    delegate = (csr_file[CSR_MEDELEG] >> exception_code) & 1;
                 }
             }
             if (delegate) {
